@@ -64,3 +64,29 @@ struct TabMatchTests {
         #expect(pairs.mapValues(\.id) == c.expected)
     }
 }
+
+struct GroupNamesTests {
+    @Test func numbersRepeatsInWindowOrderAndLeavesGivenNamesAlone() {
+        #expect(GroupNames.distinct([(nil, "carrington"), (nil, "carrington")]) == ["carrington", "carrington 2"])
+        #expect(GroupNames.distinct([(nil, "carrington"), ("Ops", "x"), (nil, "carrington"), (nil, "carrington")])
+                == ["carrington", "Ops", "carrington 2", "carrington 3"])
+        #expect(GroupNames.distinct([(nil, "carrington"), ("carrington", "x")]) == ["carrington 2", "carrington"])
+        #expect(GroupNames.distinct([("Ops", "a"), ("Ops", "b")]) == ["Ops", "Ops"])
+        #expect(GroupNames.distinct([(nil, "shop"), (nil, "infra")]) == ["shop", "infra"])
+    }
+}
+
+@MainActor
+struct StoreGroupTests {
+    private func row(_ id: String, _ cwd: String, window: String, tab: Int) -> Row {
+        Row(id: id, title: "Session \(id)", cwd: "/p/" + cwd, status: "idle", statusSince: nil, lastInteraction: Date(),
+            needsYou: false, prompts: [], ticket: nil, windowId: window, tab: tab)
+    }
+
+    @Test func twoWindowsInOneProjectGetNumberedNames() {
+        let store = Store(demoRows: [row("1", "carrington", window: "w1", tab: 1), row("2", "carrington", window: "w2", tab: 1),
+                                     row("3", "united", window: "w3", tab: 1)],
+                          groupNames: ["w3": "Old Trafford"])
+        #expect(store.groups.map(\.name) == ["carrington", "carrington 2", "Old Trafford"])
+    }
+}

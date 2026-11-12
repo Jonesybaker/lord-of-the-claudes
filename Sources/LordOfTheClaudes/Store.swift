@@ -81,7 +81,8 @@ final class Store: ObservableObject {
     private var polling = false
     private var poweringOff = false
     private let data = ClaudeData()
-    private let toggleSignal = DispatchSource.makeSignalSource(signal: SIGUSR1, queue: .main)
+    /// Only the real store makes one: freeing a source never resumed traps, and a demo store is freed.
+    private var toggleSignal: DispatchSourceSignal?
 
     private let stateURL: URL = {
         let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -128,8 +129,10 @@ final class Store: ObservableObject {
 
         // Lets a script open the panel: `pkill -USR1 -x LordOfTheClaudes`.
         signal(SIGUSR1, SIG_IGN)
+        let toggleSignal = DispatchSource.makeSignalSource(signal: SIGUSR1, queue: .main)
         toggleSignal.setEventHandler { Panel.toggle() }
         toggleSignal.resume()
+        self.toggleSignal = toggleSignal
 
         NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.willPowerOffNotification, object: nil, queue: .main
@@ -280,16 +283,23 @@ final class Store: ObservableObject {
     var groups: [Group] {
         var order: [String] = []
         for terminal in terminals where !order.contains(terminal.windowId) { order.append(terminal.windowId) }
-        return order.compactMap { windowId in
+        let windows = order.compactMap { windowId -> (id: String, rows: [Row])? in
             let members = rows.filter { $0.windowId == windowId }.sorted { ($0.tab ?? 0) < ($1.tab ?? 0) }
-            return members.isEmpty ? nil : Group(id: windowId, name: groupName(of: members), rows: members)
+            return members.isEmpty ? nil : (windowId, members)
+        }
+        let names = GroupNames.distinct(windows.map { window in
+            let records = records(of: window.rows)
+            return (given: Self.commonest(records.compactMap(\.group)),
+                    usual: Self.commonest(window.rows.map { URL(fileURLWithPath: $0.cwd).lastPathComponent }) ?? "Sessions")
+        })
+        return zip(windows, names).map { window, name in
+            Group(id: window.id, name: name, rows: window.rows)
         }
     }
 
-    /// The name the user gave it, otherwise the directory most of its sessions are in.
-    private func groupName(of members: [Row]) -> String {
-        let given = members.compactMap { row in state.records.first { $0.id == row.id }?.group }
-        return Self.commonest(given) ?? Self.commonest(members.map { URL(fileURLWithPath: $0.cwd).lastPathComponent }) ?? "Sessions"
+    private func records(of rows: [Row]) -> [Record] {
+        let ids = Set(rows.map(\.id))
+        return state.records.filter { ids.contains($0.id) }
     }
 
     private static func commonest(_ names: [String]) -> String? {
@@ -486,6 +496,26 @@ final class Store: ObservableObject {
             if !launchAtLogin, service.status == .enabled { try service.unregister() }
         } catch {
             NSLog("Lord of the Claudes: launch at login failed: \(error.localizedDescription)")
+        }
+    }
+}
+
+/// Window names as the panel shows them.
+enum GroupNames {
+    /// One name per group, in window order. A name the user gave stands as given; a usual (directory)
+    /// name already taken gets a number: "shop", "shop 2".
+    static func distinct(_ groups: [(given: String?, usual: String)]) -> [String] {
+        var taken = Set(groups.compactMap(\.given))
+        return groups.map { group in
+            if let given = group.given { return given }
+            var name = group.usual
+            var number = 1
+            while taken.contains(name) {
+                number += 1
+                name = "\(group.usual) \(number)"
+            }
+            taken.insert(name)
+            return name
         }
     }
 }
