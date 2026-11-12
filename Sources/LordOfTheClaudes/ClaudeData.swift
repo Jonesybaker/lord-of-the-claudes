@@ -62,7 +62,7 @@ final class ClaudeData: @unchecked Sendable {
 
     /// The session's name as Claude shows it: a /rename title if set, otherwise the generated one.
     func title(sessionId: String, cwd: String) -> String? {
-        guard let url = transcriptURL(sessionId: sessionId, cwd: cwd),
+        guard let url = Self.transcriptURL(sessionId: sessionId, cwd: cwd),
               let mtime = try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
         else { return nil }
         if let cached = titleCache[sessionId], cached.mtime == mtime { return cached.title }
@@ -74,7 +74,7 @@ final class ClaudeData: @unchecked Sendable {
         return title
     }
 
-    private func transcriptURL(sessionId: String, cwd: String) -> URL? {
+    static func transcriptURL(sessionId: String, cwd: String) -> URL? {
         let projects = Self.home.appendingPathComponent("projects")
         let slug = String(cwd.map { $0.isASCII && ($0.isLetter || $0.isNumber) ? $0 : "-" })
         let direct = projects.appendingPathComponent(slug).appendingPathComponent("\(sessionId).jsonl")
@@ -126,7 +126,7 @@ final class ClaudeData: @unchecked Sendable {
         return entries
     }
 
-    private static func readTail(_ url: URL, bytes: UInt64) -> Data {
+    static func readTail(_ url: URL, bytes: UInt64) -> Data {
         guard let handle = try? FileHandle(forReadingFrom: url) else { return Data() }
         defer { try? handle.close() }
         let size = (try? handle.seekToEnd()) ?? 0

@@ -41,6 +41,7 @@ enum HotKey {
     private static var ref: EventHotKeyRef?
 
     static func register(_ action: @escaping () -> Void) {
+        guard !Sandbox.isOn else { return }  // the installed app has it
         self.action = action
         var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
         InstallEventHandler(GetApplicationEventTarget(), { _, _, _ in

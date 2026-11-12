@@ -60,6 +60,8 @@ final class Store: ObservableObject {
     @Published private(set) var automationBlocked = false
     @Published var autoRestore: Bool { didSet { if !isDemo { UserDefaults.standard.set(autoRestore, forKey: "autoRestore") } } }
     @Published var launchAtLogin: Bool { didSet { if !isDemo { applyLaunchAtLogin() } } }
+    /// Questions from `lotc permission` waiting in the permission window; kept up to date by LotcServer.
+    @Published var permissionRequestCount = 0
     private var isDemo = false
 
     var liveCount: Int { rows.filter(\.isLive).count }
@@ -117,7 +119,7 @@ final class Store: ObservableObject {
             launchAtLogin = true  // useless after a reboot unless it starts by itself
         }
 
-        if let saved = try? Data(contentsOf: stateURL),
+        if !Sandbox.isOn, let saved = try? Data(contentsOf: stateURL),
            let decoded = try? JSONDecoder().decode(SavedState.self, from: saved) {
             state = decoded
         }
@@ -134,6 +136,7 @@ final class Store: ObservableObject {
         }
 
         HotKey.register { Panel.toggle() }
+        LotcServer.start(store: self)
 
         Task {
             while true {
@@ -342,7 +345,7 @@ final class Store: ObservableObject {
     }
 
     private func save() {
-        guard !isDemo else { return }
+        guard !isDemo, !Sandbox.isOn else { return }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         if let encoded = try? encoder.encode(state) { try? encoded.write(to: stateURL, options: .atomic) }
