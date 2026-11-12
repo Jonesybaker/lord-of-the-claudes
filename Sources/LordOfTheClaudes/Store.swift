@@ -86,13 +86,25 @@ final class Store: ObservableObject {
         return dir.appendingPathComponent("state.json")
     }()
 
-    /// Made-up sessions for README screenshots: reads and writes nothing.
-    init(demoRows: [Row]) {
+    /// Made-up sessions for README screenshots: reads and writes nothing, and never talks to Ghostty.
+    /// `groupNames` names the made-up windows, by window id.
+    init(demoRows: [Row], groupNames: [String: String] = [:]) {
         autoRestore = true
         launchAtLogin = false
         isDemo = true
         rows = demoRows
         ghosttyRunning = true
+        // Stand-in tabs, so `groups` finds the windows the rows say they are in.
+        terminals = demoRows
+            .compactMap { row in row.windowId.map { (row, $0) } }
+            .sorted { ($0.1, $0.0.tab ?? 0) < ($1.1, $1.0.tab ?? 0) }
+            .map { row, windowId in
+                GhosttyTerminal(id: "demo-" + row.id, windowId: windowId, title: "✳ " + row.title, cwd: row.cwd)
+            }
+        state.records = demoRows.map { row in
+            Record(id: row.id, cwd: row.cwd, title: row.title, lastSeen: Date(), lastInteraction: row.lastInteraction,
+                   group: row.windowId.flatMap { groupNames[$0] }, isLord: row.isLord ? true : nil)
+        }
     }
 
     init() {
@@ -143,7 +155,7 @@ final class Store: ObservableObject {
     }
 
     private func poll() async {
-        guard !polling else { return }
+        guard !isDemo, !polling else { return }
         polling = true
         defer { polling = false }
 
@@ -311,7 +323,7 @@ final class Store: ObservableObject {
     /// Types a prompt into the session's tab and submits it. False when its tab cannot be found.
     @discardableResult
     func send(_ text: String, toSession sessionId: String) async -> Bool {
-        guard let row = rows.first(where: { $0.id == sessionId }), row.isLive,
+        guard !isDemo, let row = rows.first(where: { $0.id == sessionId }), row.isLive,
               let terminal = terminal(titled: row.title)
         else { return false }
         let sent = await Task.detached { Ghostty.send(text: text, toTerminal: terminal.id) }.value
@@ -330,6 +342,7 @@ final class Store: ObservableObject {
     }
 
     private func save() {
+        guard !isDemo else { return }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         if let encoded = try? encoder.encode(state) { try? encoded.write(to: stateURL, options: .atomic) }
