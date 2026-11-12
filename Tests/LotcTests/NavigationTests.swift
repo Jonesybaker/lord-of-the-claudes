@@ -96,6 +96,23 @@ struct WaitingTests {
     }
 }
 
+struct ThrowawayTests {
+    @Test(arguments: [
+        ("/private/tmp/claude-501/scratchpad/e2e", true),
+        ("/tmp", true),
+        ("/tmp/united", true),
+        ("/tmpfoo", false),
+        ("/var/folders/r3/xyz/T/run", true),
+        ("/private/var/folders/r3/xyz/T", true),
+        ("/Users/mj/Projects/united", false),
+        ("/Users/mj/scratch/a", true),
+        ("/Users/mj/scratchpad", false),
+    ])
+    func spotsTemporaryDirectories(cwd: String, temporary: Bool) {
+        #expect(Throwaway.isTemporary(cwd, tmpdir: "/Users/mj/scratch/") == temporary)
+    }
+}
+
 struct GroupNamesTests {
     @Test func numbersRepeatsInWindowOrderAndLeavesGivenNamesAlone() {
         #expect(GroupNames.distinct([(nil, "carrington"), (nil, "carrington")]) == ["carrington", "carrington 2"])

@@ -73,6 +73,7 @@ struct PanelView: View {
     @State private var selection: String?
     @State private var expanded: Set<String>
     @State private var confirmingStale = false
+    @State private var showAllClosed = false
     @State private var listHeight: CGFloat = 0
     @FocusState private var focus: PanelField?
     @State private var keys = PanelKeys()
@@ -116,10 +117,17 @@ struct PanelView: View {
         }
     }
 
-    private var closed: [Row] { Array(store.rows.filter { !$0.isLive && matches($0) }.prefix(15)) }
+    private static let closedCap = 5
+
+    /// Closed sessions matching the filter: five unless asked for all, every one while filtering.
+    private var closed: (shown: [Row], total: Int) {
+        let matching = store.rows.filter { !$0.isLive && matches($0) }
+        let all = showAllClosed || !query.isEmpty
+        return (all ? matching : Array(matching.prefix(Self.closedCap)), matching.count)
+    }
 
     /// Every row on screen, in display order.
-    private var visible: [Row] { groups.flatMap { $0.onScreen(filtering: !query.isEmpty) } + closed }
+    private var visible: [Row] { groups.flatMap { $0.onScreen(filtering: !query.isEmpty) } + closed.shown }
     private var stale: [Row] { store.rows.filter(\.isStale) }
 
     private var selectedRow: Row? {
@@ -158,6 +166,7 @@ struct PanelView: View {
         query = ""
         selection = nil
         confirmingStale = false
+        showAllClosed = false
         renaming = nil
         broadcast?.confirming = false
         replyNotes = [:]
@@ -244,7 +253,7 @@ struct PanelView: View {
     /// Cmd+Down and Cmd+Up: the first row of the next or previous group on screen. Recently closed comes last.
     private func jumpSection(by delta: Int) {
         let filtering = !query.isEmpty
-        let closed = self.closed
+        let closed = closed.shown
         let sections = groups.map { $0.onScreen(filtering: filtering).map(\.id) }.filter { !$0.isEmpty }
             + (closed.isEmpty ? [] : [closed.map(\.id)])
         if let target = SectionJump.target(from: selectedRow?.id, by: delta, in: sections) { selection = target }
@@ -430,7 +439,7 @@ struct PanelView: View {
         if let group = groups.first(where: { $0.onScreen(filtering: filtering).first?.id == rowId }) {
             return Self.headerId(group)
         }
-        return closed.first?.id == rowId ? Self.closedHeaderId : nil
+        return closed.shown.first?.id == rowId ? Self.closedHeaderId : nil
     }
 
     private var list: some View {
@@ -447,14 +456,20 @@ struct PanelView: View {
                         if headed { groupHeader(group, quiet: groups.count == 1).id(Self.headerId(group)) }
                         ForEach(group.onScreen(filtering: filtering)) { row in sessionRow(row, selected: row.id == selectedId) }
                     }
-                    if !closed.isEmpty {
+                    if !closed.shown.isEmpty {
                         Text("RECENTLY CLOSED")
                             .font(.caption2).foregroundStyle(.secondary)
                             .padding(.horizontal, 12).padding(.top, 10).padding(.bottom, 2)
                             .id(Self.closedHeaderId)
-                        ForEach(closed) { row in sessionRow(row, selected: row.id == selectedId) }
+                        ForEach(closed.shown) { row in sessionRow(row, selected: row.id == selectedId) }
+                        if closed.shown.count < closed.total {
+                            Button("Show all \(closed.total)") { showAllClosed = true }
+                                .buttonStyle(.link)
+                                .font(.callout)
+                                .padding(.horizontal, 12).padding(.vertical, 6)
+                        }
                     }
-                    if groups.allSatisfy(\.shown.isEmpty) && closed.isEmpty {
+                    if groups.allSatisfy(\.shown.isEmpty) && closed.shown.isEmpty {
                         Text(query.isEmpty ? "No Claude sessions seen yet." : "No sessions match.")
                             .foregroundStyle(.secondary).padding(12)
                     }

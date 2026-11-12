@@ -201,6 +201,9 @@ final class Store: ObservableObject {
                              with: terminals)
 
         if snap.running && !poweringOff {
+            // Scratch sessions are forgotten once closed, so never reopened either.
+            state.records.removeAll { live[$0.id] == nil && Throwaway.isTemporary($0.cwd) }
+
             // Ghostty has started since we last saw it: whatever was open back then needs reopening.
             if let launch = snap.ghosttyLaunch, launch > state.heartbeat, state.heartbeat > .distantPast {
                 let cutoff = state.heartbeat.addingTimeInterval(-grace)
