@@ -19,7 +19,8 @@ struct AgeBadge: View {
     var body: some View {
         Text(shortAge(date))
             .font(.caption.monospacedDigit().weight(.medium))
-            .foregroundStyle(live && strength > 0.5 ? Color.white : Color.primary.opacity(0.75))
+            // White only on the solid badge: on a paler one it is unreadable in the light theme.
+            .foregroundStyle(live && strength == 1 ? Color.white : Color.primary.opacity(0.75))
             .frame(width: 34, height: 20)
             .background(
                 RoundedRectangle(cornerRadius: 5)
