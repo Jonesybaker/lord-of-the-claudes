@@ -135,7 +135,9 @@ struct PermissionQueueTests {
         let queue = PermissionQueue()
         let first = request()
         let second = request()
+        // Child tasks start in any order, so the second asks only once the first is queued.
         async let firstAnswer = queue.ask(first)
+        while queue.requests.isEmpty { await Task.yield() }
         async let secondAnswer = queue.ask(second)
         while queue.requests.count < 2 { await Task.yield() }
         #expect(queue.front?.id == first.id)
