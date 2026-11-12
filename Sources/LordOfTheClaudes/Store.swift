@@ -74,6 +74,8 @@ final class Store: ObservableObject {
 
     private var state = SavedState()
     private var terminals: [GhosttyTerminal] = []
+    /// Each running session's tab, by session id. See TabMatch.
+    private var tabs: [String: GhosttyTerminal] = [:]
     private var history: [String: SessionHistory] = [:]
     private var live: [String: LiveSession] = [:]
     private var polling = false
@@ -186,6 +188,9 @@ final class Store: ObservableObject {
         automationBlocked = snap.running && snap.ghostty == nil
         if snap.running { history = snap.history }
         live = Dictionary(snap.live.map { ($0.sessionId, $0) }, uniquingKeysWith: { a, _ in a })
+        let titles = live.mapValues { title(of: $0, in: snap) }
+        tabs = TabMatch.pair(live.values.map { TabMatch.Session(id: $0.sessionId, title: titles[$0.sessionId]!, cwd: $0.cwd) },
+                             with: terminals)
 
         if snap.running && !poweringOff {
             // Ghostty has started since we last saw it: whatever was open back then needs reopening.
@@ -200,35 +205,28 @@ final class Store: ObservableObject {
                 }
             }
 
-            // Tabs are matched to sessions by title: Ghostty does not expose a tab's process.
-            let frontTitle = snap.ghostty?.focusedId
-                .flatMap { id in terminals.first { $0.id == id } }
-                .flatMap { $0.looksLikeClaude ? $0.sessionTitle : nil }
-
+            let front = snap.ghostty?.focusedId
             for session in snap.live {
-                let existing = state.records.firstIndex { $0.id == session.sessionId }
-                let lastPrompt = snap.history[session.sessionId]?.prompts.last
-                let title = snap.titles[session.sessionId]
-                    ?? existing.map { state.records[$0].title }
-                    ?? lastPrompt?.text.split(separator: "\n").first.map { String($0.prefix(80)) }
-                    ?? URL(fileURLWithPath: session.cwd).lastPathComponent
+                let id = session.sessionId
+                let existing = state.records.firstIndex { $0.id == id }
+                let lastPrompt = snap.history[id]?.prompts.last
+                let title = titles[id]!
+                let tab = tabs[id]
 
                 var record = existing.map { state.records[$0] }
-                    ?? Record(id: session.sessionId, cwd: session.cwd, title: title, lastSeen: now,
+                    ?? Record(id: id, cwd: session.cwd, title: title, lastSeen: now,
                               lastInteraction: session.updatedAt, seenAt: now)
                 record.cwd = session.cwd
                 record.title = title
                 record.lastSeen = now
                 record.closedByUser = nil
                 if let lastPrompt { record.lastInteraction = lastPrompt.date }
-                if let index = terminals.firstIndex(where: { $0.looksLikeClaude && $0.sessionTitle == title }) {
-                    record.position = index
-                }
-                if record.seenAt == nil || frontTitle == title { record.seenAt = now }
-                if record.group == nil, let windowId = terminal(titled: title)?.windowId {
+                if let tab { record.position = terminals.firstIndex { $0.id == tab.id } }
+                if record.seenAt == nil || (front != nil && tab?.id == front) { record.seenAt = now }
+                if let windowId = tab?.windowId {
                     // A session opened in a named window joins that group.
-                    record.group = rows.first { $0.windowId == windowId && $0.id != record.id }
-                        .flatMap { row in state.records.first { $0.id == row.id }?.group }
+                    let neighbours = state.records.filter { $0.id != id && tabs[$0.id]?.windowId == windowId }
+                    if record.group == nil { record.group = Self.commonest(neighbours.compactMap(\.group)) }
                 }
 
                 if let existing { state.records[existing] = record } else { state.records.append(record) }
@@ -244,7 +242,7 @@ final class Store: ObservableObject {
                 let session = live[record.id]
                 let sessionHistory = history[record.id]
                 let needsYou = session.map { $0.status != "busy" && $0.statusUpdatedAt > (record.seenAt ?? .distantFuture) } ?? false
-                let terminal = session == nil ? nil : terminal(titled: record.title)
+                let terminal = session == nil ? nil : tabs[record.id]
                 let tab = terminal.flatMap { t in
                     terminals.filter { $0.windowId == t.windowId }.firstIndex { $0.id == t.id }.map { $0 + 1 }
                 }
@@ -260,6 +258,14 @@ final class Store: ObservableObject {
             .sorted { ($0.needsYou ? 1 : 0, $0.lastInteraction) > ($1.needsYou ? 1 : 0, $1.lastInteraction) }
     }
 
+    /// Claude's own title, else the one we had, else its last prompt, else its directory.
+    private func title(of session: LiveSession, in snap: Snapshot) -> String {
+        snap.titles[session.sessionId]
+            ?? state.records.first { $0.id == session.sessionId }?.title
+            ?? snap.history[session.sessionId]?.prompts.last?.text.split(separator: "\n").first.map { String($0.prefix(80)) }
+            ?? URL(fileURLWithPath: session.cwd).lastPathComponent
+    }
+
     // MARK: Groups
 
     /// A group is a Ghostty window: the sessions in its tabs.
@@ -267,11 +273,6 @@ final class Store: ObservableObject {
         let id: String  // the Ghostty window id
         let name: String
         let rows: [Row]
-    }
-
-    /// Tabs are matched to sessions by title: Ghostty does not expose a tab's process.
-    private func terminal(titled title: String) -> GhosttyTerminal? {
-        terminals.first { $0.looksLikeClaude && $0.sessionTitle == title }
     }
 
     /// Running sessions by window, in Ghostty's window order, each in tab order.
@@ -287,11 +288,12 @@ final class Store: ObservableObject {
 
     /// The name the user gave it, otherwise the directory most of its sessions are in.
     private func groupName(of members: [Row]) -> String {
-        func commonest(_ names: [String]) -> String? {
-            Dictionary(grouping: names, by: { $0 }).max { ($0.value.count, $1.key) < ($1.value.count, $0.key) }?.key
-        }
         let given = members.compactMap { row in state.records.first { $0.id == row.id }?.group }
-        return commonest(given) ?? commonest(members.map { URL(fileURLWithPath: $0.cwd).lastPathComponent }) ?? "Sessions"
+        return Self.commonest(given) ?? Self.commonest(members.map { URL(fileURLWithPath: $0.cwd).lastPathComponent }) ?? "Sessions"
+    }
+
+    private static func commonest(_ names: [String]) -> String? {
+        Dictionary(grouping: names, by: { $0 }).max { ($0.value.count, $1.key) < ($1.value.count, $0.key) }?.key
     }
 
     func renameGroup(_ windowId: String, to name: String) {
@@ -327,7 +329,7 @@ final class Store: ObservableObject {
     @discardableResult
     func send(_ text: String, toSession sessionId: String) async -> Bool {
         guard !isDemo, let row = rows.first(where: { $0.id == sessionId }), row.isLive,
-              let terminal = terminal(titled: row.title)
+              let terminal = tabs[row.id]
         else { return false }
         let sent = await Task.detached { Ghostty.send(text: text, toTerminal: terminal.id) }.value
         if sent { await poll() }
@@ -376,7 +378,7 @@ final class Store: ObservableObject {
     }
 
     func focus(_ row: Row) {
-        let match = terminal(titled: row.title)
+        let match = tabs[row.id]
         Task.detached {
             if let match { Ghostty.focus(terminalId: match.id) } else { Ghostty.app?.activate() }
         }
@@ -386,9 +388,8 @@ final class Store: ObservableObject {
     func close(_ rows: [Row]) {
         let targets = rows.compactMap { row -> (id: String, pid: pid_t, terminalId: String?)? in
             guard let session = live[row.id] else { return nil }
-            // Only close the tab when the title identifies it beyond doubt.
-            let tabs = terminals.filter { $0.looksLikeClaude && $0.sessionTitle == row.title }
-            return (row.id, session.pid, tabs.count == 1 ? tabs[0].id : nil)
+            // TabMatch never guesses, so a tab it found is this session's own.
+            return (row.id, session.pid, tabs[row.id]?.id)
         }
         Task {
             let closed = await Task.detached { () -> [String] in
@@ -454,13 +455,13 @@ final class Store: ObservableObject {
             var tabs: [String: GhosttyTerminal] = [:]
             for record in todo {
                 if let position = record.position, let terminal = free[position],
-                   Self.samePath(terminal.cwd, record.cwd) {
+                   TabMatch.samePath(terminal.cwd, record.cwd) {
                     tabs[record.id] = terminal
                     free[position] = nil
                 }
             }
             for record in todo where tabs[record.id] == nil {
-                if let position = free.keys.sorted().first(where: { Self.samePath(free[$0]!.cwd, record.cwd) }) {
+                if let position = free.keys.sorted().first(where: { TabMatch.samePath(free[$0]!.cwd, record.cwd) }) {
                     tabs[record.id] = free.removeValue(forKey: position)
                 }
             }
@@ -476,10 +477,6 @@ final class Store: ObservableObject {
         }.value
 
         pending.removeAll { ids.contains($0) }
-    }
-
-    private nonisolated static func samePath(_ a: String, _ b: String) -> Bool {
-        URL(fileURLWithPath: a).standardizedFileURL.path == URL(fileURLWithPath: b).standardizedFileURL.path
     }
 
     private func applyLaunchAtLogin() {

@@ -5,7 +5,8 @@ import LotcKit
 extension LotcServer {
     static let notTracked = """
         Lord of the Claudes cannot see this session in a Ghostty tab. It matches tabs by title, \
-        so a new or renamed session takes up to 5 seconds to appear.
+        so a new or renamed session takes up to 5 seconds to appear. Two new sessions in one \
+        directory appear once Claude has titled them.
         """
 
     func run(_ command: LotcCommand, caller: String?) async -> LotcResponse {
