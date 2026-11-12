@@ -9,5 +9,6 @@ let package = Package(
         .target(name: "LotcKit", path: "Sources/LotcKit"),
         .executableTarget(name: "LordOfTheClaudes", dependencies: ["LotcKit"], path: "Sources/LordOfTheClaudes"),
         .executableTarget(name: "lotc", dependencies: ["LotcKit"], path: "Sources/lotc"),
+        .testTarget(name: "LotcTests", dependencies: ["LotcKit", "lotc", "LordOfTheClaudes"], path: "Tests/LotcTests"),
     ]
 )
