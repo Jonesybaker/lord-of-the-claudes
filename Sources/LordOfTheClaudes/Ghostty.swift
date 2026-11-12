@@ -3,6 +3,8 @@ import Foundation
 
 struct GhosttyTerminal {
     let id: String
+    /// The Ghostty window this terminal's tab is in.
+    let windowId: String
     let title: String
     let cwd: String
 
@@ -34,30 +36,44 @@ enum Ghostty {
 
     static func state() -> State? {
         guard app != nil else { return nil }
+        // One record per window: its id, then the ids, titles and directories of its terminals.
+        // Separators are ASCII control characters, which never appear in a title or a path.
         let script = """
+        set US to (character id 31)
+        set RS to (character id 30)
+        set GS to (character id 29)
+        set out to ""
+        set f to ""
         tell application "Ghostty"
-            set a to id of terminals of tabs of windows
-            set b to name of terminals of tabs of windows
-            set c to working directory of terminals of tabs of windows
-            set f to ""
+            repeat with w in windows
+                set a to id of terminals of tabs of w
+                set b to name of terminals of tabs of w
+                set c to working directory of terminals of tabs of w
+                set AppleScript's text item delimiters to US
+                set out to out & (id of w) & RS & (a as text) & RS & (b as text) & RS & (c as text) & GS
+            end repeat
             if frontmost then
                 try
                     set f to id of focused terminal of selected tab of front window
                 end try
             end if
         end tell
-        set AppleScript's text item delimiters to (character id 31)
-        return (a as text) & linefeed & (b as text) & linefeed & (c as text) & linefeed & f
+        return out & linefeed & f
         """
-        guard let out = run(script) else { return nil }
-        let lines = out.split(separator: "\n", omittingEmptySubsequences: false)
-        guard lines.count >= 4 else { return nil }
-        let lists = lines.prefix(3).map { $0.split(separator: "\u{1F}", omittingEmptySubsequences: false).map(String.init) }
-        guard lists[0].count == lists[1].count, lists[0].count == lists[2].count else { return nil }
-        let terminals = lists[0].indices.compactMap { i in
-            lists[0][i].isEmpty ? nil : GhosttyTerminal(id: lists[0][i], title: lists[1][i], cwd: lists[2][i])
+        guard let out = run(script), let split = out.lastIndex(of: "\n") else { return nil }
+        var terminals: [GhosttyTerminal] = []
+        for window in out[..<split].split(separator: "\u{1D}") {
+            let fields = window.split(separator: "\u{1E}", omittingEmptySubsequences: false)
+                .map { $0.split(separator: "\u{1F}", omittingEmptySubsequences: false).map(String.init) }
+            guard fields.count == 4, let windowId = fields[0].first,
+                  fields[1].count == fields[2].count, fields[1].count == fields[3].count
+            else { return nil }
+            for i in fields[1].indices where !fields[1][i].isEmpty {
+                terminals.append(GhosttyTerminal(id: fields[1][i], windowId: windowId, title: fields[2][i], cwd: fields[3][i]))
+            }
         }
-        return State(terminals: terminals, focusedId: lines[3].isEmpty ? nil : String(lines[3]))
+        let focused = String(out[out.index(after: split)...])
+        return State(terminals: terminals, focusedId: focused.isEmpty ? nil : focused)
     }
 
     static func terminals() -> [GhosttyTerminal]? { state()?.terminals }
@@ -86,6 +102,19 @@ enum Ghostty {
         tell application "Ghostty"
             set t to first terminal whose id is "\(escape(terminalId))"
             input text "claude --resume \(sessionId)" to t
+            delay 0.3
+            send key "enter" to t
+        end tell
+        """) != nil
+    }
+
+    /// Types a prompt into a terminal and submits it. Claude Code queues it if it is busy.
+    static func send(text: String, toTerminal terminalId: String) -> Bool {
+        guard app != nil else { return false }
+        return run("""
+        tell application "Ghostty"
+            set t to first terminal whose id is "\(escape(terminalId))"
+            input text "\(escape(text))" to t
             delay 0.3
             send key "enter" to t
         end tell

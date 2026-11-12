@@ -15,6 +15,10 @@ struct Record: Codable {
     var seenAt: Date?
     /// Closed from the panel, so not to be reopened automatically.
     var closedByUser: Bool?
+    /// The name the user gave the group (Ghostty window) this session is in.
+    var group: String?
+    /// This session directs the others in its window.
+    var isLord: Bool?
 }
 
 struct SavedState: Codable {
@@ -36,6 +40,11 @@ struct Row: Identifiable {
     let needsYou: Bool
     let prompts: [(date: Date, text: String)]
     let ticket: URL?
+    /// The Ghostty window its tab is in; nil when closed or when its tab cannot be found.
+    var windowId: String? = nil
+    /// 1-based place of its tab among the terminals of its window.
+    var tab: Int? = nil
+    var isLord = false
 
     var isLive: Bool { status != nil }
     var isStale: Bool { isLive && Date().timeIntervalSince(lastInteraction) > Self.staleAfter }
@@ -201,6 +210,11 @@ final class Store: ObservableObject {
                     record.position = index
                 }
                 if record.seenAt == nil || frontTitle == title { record.seenAt = now }
+                if record.group == nil, let windowId = terminal(titled: title)?.windowId {
+                    // A session opened in a named window joins that group.
+                    record.group = rows.first { $0.windowId == windowId && $0.id != record.id }
+                        .flatMap { row in state.records.first { $0.id == row.id }?.group }
+                }
 
                 if let existing { state.records[existing] = record } else { state.records.append(record) }
             }
@@ -215,15 +229,104 @@ final class Store: ObservableObject {
                 let session = live[record.id]
                 let sessionHistory = history[record.id]
                 let needsYou = session.map { $0.status != "busy" && $0.statusUpdatedAt > (record.seenAt ?? .distantFuture) } ?? false
+                let terminal = session == nil ? nil : terminal(titled: record.title)
+                let tab = terminal.flatMap { t in
+                    terminals.filter { $0.windowId == t.windowId }.firstIndex { $0.id == t.id }.map { $0 + 1 }
+                }
                 return Row(
                     id: record.id, title: record.title, cwd: record.cwd,
                     status: session?.status, statusSince: session?.statusUpdatedAt,
                     lastInteraction: record.lastInteraction, needsYou: needsYou,
                     prompts: sessionHistory?.prompts ?? [],
-                    ticket: Tickets.link(title: record.title) ?? sessionHistory?.link
+                    ticket: Tickets.link(title: record.title) ?? sessionHistory?.link,
+                    windowId: terminal?.windowId, tab: tab, isLord: session != nil && record.isLord == true
                 )
             }
             .sorted { ($0.needsYou ? 1 : 0, $0.lastInteraction) > ($1.needsYou ? 1 : 0, $1.lastInteraction) }
+    }
+
+    // MARK: Groups
+
+    /// A group is a Ghostty window: the sessions in its tabs.
+    struct Group: Identifiable {
+        let id: String  // the Ghostty window id
+        let name: String
+        let rows: [Row]
+    }
+
+    /// Tabs are matched to sessions by title: Ghostty does not expose a tab's process.
+    private func terminal(titled title: String) -> GhosttyTerminal? {
+        terminals.first { $0.looksLikeClaude && $0.sessionTitle == title }
+    }
+
+    /// Running sessions by window, in Ghostty's window order, each in tab order.
+    /// Sessions whose tab cannot be found are not in any group.
+    var groups: [Group] {
+        var order: [String] = []
+        for terminal in terminals where !order.contains(terminal.windowId) { order.append(terminal.windowId) }
+        return order.compactMap { windowId in
+            let members = rows.filter { $0.windowId == windowId }.sorted { ($0.tab ?? 0) < ($1.tab ?? 0) }
+            return members.isEmpty ? nil : Group(id: windowId, name: groupName(of: members), rows: members)
+        }
+    }
+
+    /// The name the user gave it, otherwise the directory most of its sessions are in.
+    private func groupName(of members: [Row]) -> String {
+        func commonest(_ names: [String]) -> String? {
+            Dictionary(grouping: names, by: { $0 }).max { ($0.value.count, $1.key) < ($1.value.count, $0.key) }?.key
+        }
+        let given = members.compactMap { row in state.records.first { $0.id == row.id }?.group }
+        return commonest(given) ?? commonest(members.map { URL(fileURLWithPath: $0.cwd).lastPathComponent }) ?? "Sessions"
+    }
+
+    func renameGroup(_ windowId: String, to name: String) {
+        let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let members = Set(rows.filter { $0.windowId == windowId }.map(\.id))
+        for index in state.records.indices where members.contains(state.records[index].id) {
+            state.records[index].group = name.isEmpty ? nil : name
+        }
+        save()
+        objectWillChange.send()
+    }
+
+    /// Makes a session the lord of its window; a window has one lord.
+    func makeLord(_ sessionId: String) {
+        guard let windowId = rows.first(where: { $0.id == sessionId })?.windowId else { return }
+        let members = Set(rows.filter { $0.windowId == windowId }.map(\.id))
+        for index in state.records.indices where members.contains(state.records[index].id) {
+            state.records[index].isLord = state.records[index].id == sessionId ? true : nil
+        }
+        save()
+        Task { await poll() }
+    }
+
+    /// The running sessions sharing a window with this one, itself included, in tab order.
+    func window(ofSession sessionId: String) -> [Row] {
+        guard let windowId = rows.first(where: { $0.id == sessionId })?.windowId else { return [] }
+        return groups.first { $0.id == windowId }?.rows ?? []
+    }
+
+    // MARK: Prompts
+
+    /// Types a prompt into the session's tab and submits it. False when its tab cannot be found.
+    @discardableResult
+    func send(_ text: String, toSession sessionId: String) async -> Bool {
+        guard let row = rows.first(where: { $0.id == sessionId }), row.isLive,
+              let terminal = terminal(titled: row.title)
+        else { return false }
+        let sent = await Task.detached { Ghostty.send(text: text, toTerminal: terminal.id) }.value
+        if sent { await poll() }
+        return sent
+    }
+
+    /// Sends one prompt to every session in a window. Returns how many took it.
+    @discardableResult
+    func broadcast(_ text: String, toGroup windowId: String) async -> Int {
+        var sent = 0
+        for row in rows where row.windowId == windowId {
+            if await send(text, toSession: row.id) { sent += 1 }
+        }
+        return sent
     }
 
     private func save() {
@@ -257,7 +360,7 @@ final class Store: ObservableObject {
     }
 
     func focus(_ row: Row) {
-        let match = terminals.first { $0.looksLikeClaude && $0.sessionTitle == row.title }
+        let match = terminal(titled: row.title)
         Task.detached {
             if let match { Ghostty.focus(terminalId: match.id) } else { Ghostty.app?.activate() }
         }
