@@ -8,7 +8,8 @@ enum Screenshots {
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let store = Store(demoRows: demoRows(), groupNames: ["w1": "Shop", "w2": "Platform"])
+        let store = Store(demoRows: demoRows(), groupNames: ["w1": "Shop", "w2": "Platform", "w3": "Docs"],
+                          collapsed: ["w3"])
         let shots = [
             Shot(name: "panel-dark", appearance: .darkAqua),
             Shot(name: "panel-light", appearance: .aqua),
@@ -61,7 +62,8 @@ enum Screenshots {
         var broadcast: BroadcastDraft?
     }
 
-    /// Two made-up Ghostty windows: "Shop" (w1, its lord the passkeys session) and "Platform" (w2).
+    /// Three made-up Ghostty windows: "Shop" (w1, its lord the passkeys session), "Platform" (w2)
+    /// and "Docs" (w3, folded away with one session waiting).
     private static func demoRows() -> [Row] {
         func ago(_ minutes: Double) -> Date { Date().addingTimeInterval(-minutes * 60) }
         func row(_ id: String, _ title: String, _ cwd: String, status: String?, last: Double,
@@ -96,6 +98,12 @@ enum Screenshots {
             row("7", "Spike: search with pg_trgm", "shop-api", status: "idle", last: 4 * 24 * 60,
                 prompts: [(4 * 24 * 60, "is trigram search fast enough for 2m products?")],
                 window: "w1", tab: 4),
+            row("10", "Fix broken links in the guides", "docs", status: "idle", last: 22, needsYou: true,
+                prompts: [(22, "find every broken link in the guides and fix them")],
+                window: "w3", tab: 1),
+            row("11", "Screenshots for the 2.4 guide", "docs", status: "busy", last: 6,
+                prompts: [(6, "retake the screenshots in the 2.4 guide")],
+                window: "w3", tab: 2),
             row("8", "Onboarding email copy", "marketing", status: nil, last: 2 * 24 * 60,
                 prompts: [(2 * 24 * 60, "shorten the welcome email to five lines")]),
             row("9", "Dependabot backlog", "shop-web", status: nil, last: 6 * 24 * 60,

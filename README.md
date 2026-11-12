@@ -3,21 +3,22 @@
 One panel to rule them all. A macOS menu bar app that tracks every Claude Code session open in Ghostty, tells you which ones are waiting for you, lets you prompt them and answer their permission prompts in one place, and brings them all back after a reboot.
 
 <p align="center">
-  <img src="docs/panel-dark.png" width="460" alt="The panel: nine Claude Code sessions, two flagged as waiting for you">
+  <img src="docs/panel-dark.png" width="460" alt="The panel: three Ghostty windows, one folded away, with three sessions waiting for you">
 </p>
 
 ## What it does
 
-- **Shows every session, grouped by Ghostty window.** Title, last prompt and time since you last spoke to it. Each window gets a header with how many are open and how many are waiting.
+- **Shows every session, grouped by Ghostty window.** Title, last prompt and time since you last spoke to it. Each window gets a header with how many are open and how many are waiting. Two windows in one project are told apart: "shop" and "shop 2".
+- **Folds a window away.** The chevron on a group hides its sessions and keeps its counts. Cmd+1 to Cmd+9 jump to a group, Cmd+Down and Cmd+Up to the next or previous one.
 - **Names your windows.** Click a group's name to rename it. Leave it empty to go back to the directory name.
 - **Replies without switching tabs.** Expand a session, type in "Send a prompt" and press Return. Cmd+R opens the field on the selected session.
 - **Prompts a whole window at once.** The megaphone on a group sends one prompt to every session in it. It asks once more, naming the count, before it sends.
 - **Answers permission prompts in one window.** Approve, deny, or tell Claude what to do instead.
 - **Lets one session direct the rest.** A lord session runs `lotc` to prompt its siblings and read their answers.
-- **Flags the ones waiting for you.** A session that has finished while its tab was out of sight gets a bell. The menu bar shows the count as "2/7".
+- **Flags the ones waiting for you.** A session that finishes work while its tab is out of sight gets a bell. Sessions reopened after a restart come back quiet. The menu bar shows the count as "2/7".
 - **Jumps to the tab.** Ctrl+Option+C opens the panel from anywhere. Type to filter, Return to jump.
 - **Reopens everything after a restart.** Quit Ghostty or reboot, and each session resumes in the tab it was in.
-- **Remembers closed sessions.** They stay under "Recently closed" for 14 days with a Reopen button.
+- **Remembers closed sessions.** They stay under "Recently closed" for 14 days with a Reopen button. The last five show, the rest behind "Show all". Sessions in a temporary directory are forgotten once closed.
 - **Links to the ticket.** A Jira key or Zendesk ticket number in the session title becomes a button.
 
 <p align="center">
@@ -46,12 +47,15 @@ On first run macOS asks to let it control Ghostty. Allow it.
 | Ctrl+Option+C | Open or close the panel |
 | Type | Filter by title, directory or group |
 | Up, Down | Move |
+| Cmd+Down, Cmd+Up | Jump to the next or previous group |
+| Cmd+1 to Cmd+9 | Jump to that group. Its number is on its header |
 | Return | Jump to the session, or reopen a closed one |
 | Right, Left, Tab | Show or hide its recent prompts |
 | Cmd+R | Reply to the selected session |
 | Esc | Leave a text field, or close |
 
 - In a reply, broadcast or rename field, the arrows and Return edit the text. Esc leaves the field.
+- A folded group stays folded until you open it, across restarts. A filter still finds its sessions, and Cmd+N opens it.
 - Right-click a session and choose "Make lord of this group". The lord shows a crown.
 - Hover a running session for an X that ends it and closes its tab.
 - Sessions untouched for over a week get a "Close them" banner.
@@ -102,7 +106,7 @@ Links pasted into a session are picked up by themselves. To turn a Jira key or t
 
 - Every 5 seconds it reads `~/.claude/sessions/*.json`, Claude Code's registry of running processes, and keeps the ones alive under Ghostty.
 - Titles come from the session transcript. Prompts come from `~/.claude/history.jsonl`.
-- It drives Ghostty through AppleScript. Tabs are matched to sessions by title.
+- It drives Ghostty through AppleScript. Tabs are matched to sessions by title. A new session's tab reads "Claude Code" until Claude names it, so it is matched by directory instead, when it is the only such session and tab there. It never guesses: a session it cannot place shows under "Other".
 - Replies and broadcasts are typed into the tab through AppleScript, as if you had typed them.
 - `lotc` talks to the app over a Unix socket only you can open: `~/Library/Application Support/LordOfTheClaudes/lotc.sock`. It finds its session by walking up its parent processes to one listed in `~/.claude/sessions`.
 - It only reads Claude's files, except that `lotc hooks install` adds one hook to `~/.claude/settings.json`. Its own state is `~/Library/Application Support/LordOfTheClaudes/state.json`.
