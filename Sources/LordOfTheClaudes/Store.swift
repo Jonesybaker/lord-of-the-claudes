@@ -86,7 +86,7 @@ final class Store: ObservableObject {
         return dir.appendingPathComponent("state.json")
     }()
 
-    /// Made-up sessions for README screenshots: reads and writes nothing, and never talks to Ghostty.
+    /// Made-up sessions for README screenshots: reads and writes nothing, and never polls or types into Ghostty.
     /// `groupNames` names the made-up windows, by window id.
     init(demoRows: [Row], groupNames: [String: String] = [:]) {
         autoRestore = true
