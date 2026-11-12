@@ -272,9 +272,11 @@ struct PanelView: View {
         Task {
             let sent = await store.broadcast(text, toGroup: draft.windowId)
             let total = max(count, sent)
-            groupNotes[draft.windowId] = sent == total
-                ? SendNote(outcome: .sent, text: "Sent to all \(total) sessions.")
-                : SendNote(outcome: .failed, text: "Sent to \(sent) of \(total) sessions. The rest had no tab to type into.")
+            groupNotes[draft.windowId] = switch sent {
+            case total: SendNote(outcome: .sent, text: "Sent to all \(total) sessions.")
+            case 0: SendNote(outcome: .failed, text: "Could not find their tabs. Nothing was sent.")
+            default: SendNote(outcome: .failed, text: "Sent to \(sent) of \(total) sessions. The rest had no tab to type into.")
+            }
             announce(groupNotes[draft.windowId])
             if broadcast?.windowId == draft.windowId { broadcast = nil }
             if focus == .broadcast(windowId: draft.windowId) { focus = .search }
