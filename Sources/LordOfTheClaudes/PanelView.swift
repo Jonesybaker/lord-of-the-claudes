@@ -20,13 +20,35 @@ struct PanelGroup: Identifiable {
     /// Nil for "Other".
     let windowId: String?
     let name: String
+    /// Its place in the panel, from 1: Cmd+1 to Cmd+9 jump to it.
+    let number: Int
     /// Every running session in it, whatever the filter.
     let all: [Row]
     /// The ones matching the filter: waiting first, then most recent prompt.
     let shown: [Row]
+    /// Folded away by the user. Nil when it cannot fold: "Other", or the only group.
+    let collapsed: Bool?
 
     var id: String { windowId ?? "Other" }
     var waitingCount: Int { all.filter(\.needsYou).count }
+    /// The rows under its header: none while folded, unless a filter is looking inside.
+    func onScreen(filtering: Bool) -> [Row] { collapsed == true && !filtering ? [] : shown }
+}
+
+/// Where the selection lands when the panel jumps between groups or hides rows. Rows are ids in screen order.
+enum SectionJump {
+    /// The first row of the section `delta` sections on from the one holding `current`, stopping at the ends.
+    static func target(from current: String?, by delta: Int, in sections: [[String]]) -> String? {
+        guard !sections.isEmpty else { return nil }
+        let here = sections.firstIndex { section in section.contains { $0 == current } } ?? 0
+        return sections[min(max(here + delta, 0), sections.count - 1)].first
+    }
+
+    /// The row to select in place of `current` once `hiding` goes out of sight: the next one left, else the one before.
+    static func survivor(of current: String, hiding: Set<String>, in order: [String]) -> String? {
+        guard let at = order.firstIndex(of: current) else { return nil }
+        return order[at...].first { !hiding.contains($0) } ?? order[..<at].last { !hiding.contains($0) }
+    }
 }
 
 /// A prompt being written to every session in a group.
@@ -77,22 +99,27 @@ struct PanelView: View {
     /// Running sessions by Ghostty window in window order, then "Other".
     private var groups: [PanelGroup] {
         let running = store.rows.filter(\.isLive)  // already waiting first, then most recent prompt
-        var groups = store.groups.map { group in
-            let all = running.filter { $0.windowId == group.id }
-            return PanelGroup(windowId: group.id, name: group.name, all: all,
-                              shown: all.filter { matches($0, groupName: group.name) })
+        let windows = store.groups
+        var found = windows.map { group in
+            (windowId: Optional(group.id), name: group.name, all: running.filter { $0.windowId == group.id },
+             collapsed: group.collapsed)
         }
-        let grouped = Set(store.groups.map(\.id))
+        let grouped = Set(windows.map(\.id))
         let other = running.filter { row in row.windowId.map { !grouped.contains($0) } ?? true }
-        if !other.isEmpty {
-            groups.append(PanelGroup(windowId: nil, name: "Other", all: other, shown: other.filter { matches($0) }))
+        if !other.isEmpty { found.append((windowId: nil, name: "Other", all: other, collapsed: false)) }
+        // A lone group has nothing to make room for.
+        let canFold = found.count > 1
+        return found.enumerated().map { index, group in
+            PanelGroup(windowId: group.windowId, name: group.name, number: index + 1, all: group.all,
+                       shown: group.all.filter { matches($0, groupName: group.windowId == nil ? "" : group.name) },
+                       collapsed: canFold && group.windowId != nil ? group.collapsed : nil)
         }
-        return groups
     }
 
     private var closed: [Row] { Array(store.rows.filter { !$0.isLive && matches($0) }.prefix(15)) }
+
     /// Every row on screen, in display order.
-    private var visible: [Row] { groups.flatMap(\.shown) + closed }
+    private var visible: [Row] { groups.flatMap { $0.onScreen(filtering: !query.isEmpty) } + closed }
     private var stale: [Row] { store.rows.filter(\.isStale) }
 
     private var selectedRow: Row? {
@@ -160,6 +187,16 @@ struct PanelView: View {
             if let row = selectedRow, row.isLive { startReply(to: row) }
             return true
         }
+        if modifiers == .command {
+            switch keyCode {
+            case kVK_DownArrow: jumpSection(by: 1)
+            case kVK_UpArrow: jumpSection(by: -1)
+            default:
+                guard let number = Self.numberKeys[keyCode] else { return false }
+                jumpToGroup(number)
+            }
+            return true
+        }
         guard modifiers.isEmpty else { return false }
         let selected = selectedRow
         switch keyCode {
@@ -198,6 +235,28 @@ struct PanelView: View {
         selection = visible[min(max(current + delta, 0), visible.count - 1)].id
     }
 
+    /// Cmd+1 to Cmd+9 by key position, whatever the keyboard layout.
+    private static let numberKeys: [Int: Int] = [
+        kVK_ANSI_1: 1, kVK_ANSI_2: 2, kVK_ANSI_3: 3, kVK_ANSI_4: 4, kVK_ANSI_5: 5,
+        kVK_ANSI_6: 6, kVK_ANSI_7: 7, kVK_ANSI_8: 8, kVK_ANSI_9: 9,
+    ]
+
+    /// Cmd+Down and Cmd+Up: the first row of the next or previous group on screen. Recently closed comes last.
+    private func jumpSection(by delta: Int) {
+        let filtering = !query.isEmpty
+        let closed = self.closed
+        let sections = groups.map { $0.onScreen(filtering: filtering).map(\.id) }.filter { !$0.isEmpty }
+            + (closed.isEmpty ? [] : [closed.map(\.id)])
+        if let target = SectionJump.target(from: selectedRow?.id, by: delta, in: sections) { selection = target }
+    }
+
+    /// Cmd+N: the first row of group N, unfolding it if need be.
+    private func jumpToGroup(_ number: Int) {
+        guard let group = groups.first(where: { $0.number == number }), let first = group.shown.first else { return }
+        if group.collapsed == true, query.isEmpty, let windowId = group.windowId { store.setCollapsed(windowId, false) }
+        selection = first.id
+    }
+
     // MARK: Actions
 
     private func activate(_ row: Row) {
@@ -207,6 +266,19 @@ struct PanelView: View {
         } else {
             store.reopen(row)
         }
+    }
+
+    private func toggleCollapsed(_ group: PanelGroup) {
+        guard let windowId = group.windowId, let collapsed = group.collapsed else { return }
+        if !collapsed && query.isEmpty {
+            // Neither the selection nor the keyboard may stay on a row going out of sight.
+            let hiding = Set(group.shown.map(\.id))
+            if case .reply(let id) = focus, hiding.contains(id) { focus = .search }
+            if let selected = selectedRow?.id, hiding.contains(selected) {
+                selection = SectionJump.survivor(of: selected, hiding: hiding, in: visible.map(\.id))
+            }
+        }
+        store.setCollapsed(windowId, !collapsed)
     }
 
     private func toggleExpanded(_ row: Row) {
@@ -337,6 +409,7 @@ struct PanelView: View {
         let draft = broadcast.flatMap { $0.windowId == windowId ? $0 : nil }
         return GroupHeader(
             group: group, quiet: quiet,
+            toggleCollapsed: { toggleCollapsed(group) },
             renameText: isRenaming ? Binding(get: { renaming?.name ?? "" }, set: { renaming?.name = $0 }) : nil,
             startRename: windowId.map { id in { startRename(id, from: group.name) } },
             saveRename: saveRename,
@@ -348,9 +421,22 @@ struct PanelView: View {
         )
     }
 
+    private static let closedHeaderId = "header-closed"
+    private static func headerId(_ group: PanelGroup) -> String { "header-" + group.id }
+
+    /// The heading over `rowId` when it is the first row of its section, so a jump there shows the heading too.
+    private func headerId(over rowId: String) -> String? {
+        let filtering = !query.isEmpty
+        if let group = groups.first(where: { $0.onScreen(filtering: filtering).first?.id == rowId }) {
+            return Self.headerId(group)
+        }
+        return closed.first?.id == rowId ? Self.closedHeaderId : nil
+    }
+
     private var list: some View {
         let groups = groups
         let closed = closed
+        let filtering = !query.isEmpty
         let selectedId = selectedRow?.id
         // "Other" on its own is the plain list of old, so needs no heading; one window gets a quiet one.
         let headed = !(groups.count == 1 && groups[0].windowId == nil)
@@ -358,13 +444,14 @@ struct PanelView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
                     ForEach(groups.filter { !$0.shown.isEmpty }) { group in
-                        if headed { groupHeader(group, quiet: groups.count == 1) }
-                        ForEach(group.shown) { row in sessionRow(row, selected: row.id == selectedId) }
+                        if headed { groupHeader(group, quiet: groups.count == 1).id(Self.headerId(group)) }
+                        ForEach(group.onScreen(filtering: filtering)) { row in sessionRow(row, selected: row.id == selectedId) }
                     }
                     if !closed.isEmpty {
                         Text("RECENTLY CLOSED")
                             .font(.caption2).foregroundStyle(.secondary)
                             .padding(.horizontal, 12).padding(.top, 10).padding(.bottom, 2)
+                            .id(Self.closedHeaderId)
                         ForEach(closed) { row in sessionRow(row, selected: row.id == selectedId) }
                     }
                     if groups.allSatisfy(\.shown.isEmpty) && closed.isEmpty {
@@ -380,7 +467,8 @@ struct PanelView: View {
             .frame(height: min(540, max(listHeight, 30)))
             .onPreferenceChange(ContentHeight.self) { listHeight = $0 }
             .onChange(of: selection) {
-                if let selection { proxy.scrollTo(selection) }
+                guard let selection else { return }
+                if let header = headerId(over: selection) { proxy.scrollTo(header, anchor: .top) } else { proxy.scrollTo(selection) }
             }
         }
     }

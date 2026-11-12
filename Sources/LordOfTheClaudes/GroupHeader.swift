@@ -1,10 +1,13 @@
 import SwiftUI
 
-/// The heading over one group's sessions: its name, its counts and a field to prompt them all.
+/// The heading over one group's sessions: a chevron to fold them away, its name, its counts,
+/// a field to prompt them all and the Cmd+N that jumps to it.
 struct GroupHeader: View {
     let group: PanelGroup
     /// The panel has only this group: its name alone, small, as the panel's own header has the counts.
     let quiet: Bool
+    /// Folds its sessions away or brings them back. Not offered when `group.collapsed` is nil.
+    let toggleCollapsed: () -> Void
     /// The name typed so far, while the group is being renamed.
     let renameText: Binding<String>?
     /// Nil when it cannot be renamed ("Other" is not a window).
@@ -22,10 +25,16 @@ struct GroupHeader: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
+                if let collapsed = group.collapsed {
+                    chevron(collapsed)
+                } else if !quiet {
+                    Color.clear.frame(width: 12, height: 1)  // keeps "Other" in line with the windows
+                }
                 name.accessibilityAddTraits(.isHeader)
                 Spacer(minLength: 8)
                 if !quiet { counts }
                 if let toggleBroadcast { broadcastButton(toggleBroadcast) }
+                if !quiet && group.number <= 9 { shortcut }
             }
             if let broadcast {
                 BroadcastField(draft: broadcast, count: group.all.count, submit: submitBroadcast, focus: focus)
@@ -76,6 +85,27 @@ struct GroupHeader: View {
             Text("\(group.all.count) open").foregroundStyle(.secondary)
         }
         .font(.caption)
+    }
+
+    private func chevron(_ collapsed: Bool) -> some View {
+        Button(action: toggleCollapsed) {
+            Image(systemName: collapsed ? "chevron.right" : "chevron.down")
+                .font(.caption.weight(.semibold))
+                .frame(width: 12, height: 16)
+                .contentShape(Rectangle())
+        }
+        .foregroundStyle(.secondary)
+        .help(collapsed ? "Show its sessions" : "Hide its sessions")
+        .accessibilityLabel(collapsed ? "Show the sessions in \(group.name)" : "Hide the sessions in \(group.name)")
+    }
+
+    /// Quiet, so it does not compete with the counts.
+    private var shortcut: some View {
+        Text("⌘\(group.number)")
+            .font(.caption.monospacedDigit())
+            .foregroundStyle(.secondary)
+            .help("⌘\(group.number) jumps to this group")
+            .accessibilityLabel("Command \(group.number) jumps to this group")
     }
 
     private func broadcastButton(_ action: @escaping () -> Void) -> some View {

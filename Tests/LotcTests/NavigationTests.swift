@@ -76,6 +76,26 @@ struct GroupNamesTests {
     }
 }
 
+struct SectionJumpTests {
+    let sections = [["a1", "a2"], ["b1", "b2"], ["c1"]]
+
+    @Test func jumpsToTheFirstRowOfTheNextOrPreviousSectionAndStopsAtTheEnds() {
+        #expect(SectionJump.target(from: "b2", by: 1, in: sections) == "c1")
+        #expect(SectionJump.target(from: "b2", by: -1, in: sections) == "a1")
+        #expect(SectionJump.target(from: "c1", by: 1, in: sections) == "c1")
+        #expect(SectionJump.target(from: "a2", by: -1, in: sections) == "a1")
+        #expect(SectionJump.target(from: nil, by: 1, in: sections) == "b1")
+        #expect(SectionJump.target(from: "a1", by: 1, in: []) == nil)
+    }
+
+    @Test func movesOffRowsGoingOutOfSight() {
+        let order = ["a1", "a2", "b1", "b2", "c1"]
+        #expect(SectionJump.survivor(of: "b2", hiding: ["b1", "b2"], in: order) == "c1")
+        #expect(SectionJump.survivor(of: "b1", hiding: ["b1", "b2", "c1"], in: order) == "a2")
+        #expect(SectionJump.survivor(of: "a1", hiding: Set(order), in: order) == nil)
+    }
+}
+
 @MainActor
 struct StoreGroupTests {
     private func row(_ id: String, _ cwd: String, window: String, tab: Int) -> Row {
@@ -83,10 +103,15 @@ struct StoreGroupTests {
             needsYou: false, prompts: [], ticket: nil, windowId: window, tab: tab)
     }
 
-    @Test func twoWindowsInOneProjectGetNumberedNames() {
+    @Test func twoWindowsInOneProjectGetNumberedNamesAndFoldIndependently() {
         let store = Store(demoRows: [row("1", "carrington", window: "w1", tab: 1), row("2", "carrington", window: "w2", tab: 1),
                                      row("3", "united", window: "w3", tab: 1)],
-                          groupNames: ["w3": "Old Trafford"])
+                          groupNames: ["w3": "Old Trafford"], collapsed: ["w2"])
         #expect(store.groups.map(\.name) == ["carrington", "carrington 2", "Old Trafford"])
+        #expect(store.groups.map(\.collapsed) == [false, true, false])
+
+        store.setCollapsed("w2", false)
+        store.setCollapsed("w1", true)
+        #expect(store.groups.map(\.collapsed) == [true, false, false])
     }
 }

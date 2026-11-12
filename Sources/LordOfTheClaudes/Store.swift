@@ -19,6 +19,8 @@ struct Record: Codable {
     var group: String?
     /// This session directs the others in its window.
     var isLord: Bool?
+    /// The user folded its group away in the panel.
+    var collapsed: Bool?
 }
 
 struct SavedState: Codable {
@@ -92,8 +94,8 @@ final class Store: ObservableObject {
     }()
 
     /// Made-up sessions for README screenshots: reads and writes nothing, and never polls or types into Ghostty.
-    /// `groupNames` names the made-up windows, by window id.
-    init(demoRows: [Row], groupNames: [String: String] = [:]) {
+    /// `groupNames` names the made-up windows, by window id; `collapsed` lists the folded ones.
+    init(demoRows: [Row], groupNames: [String: String] = [:], collapsed: Set<String> = []) {
         autoRestore = true
         launchAtLogin = false
         isDemo = true
@@ -108,7 +110,8 @@ final class Store: ObservableObject {
             }
         state.records = demoRows.map { row in
             Record(id: row.id, cwd: row.cwd, title: row.title, lastSeen: Date(), lastInteraction: row.lastInteraction,
-                   group: row.windowId.flatMap { groupNames[$0] }, isLord: row.isLord ? true : nil)
+                   group: row.windowId.flatMap { groupNames[$0] }, isLord: row.isLord ? true : nil,
+                   collapsed: row.windowId.map(collapsed.contains) == true ? true : nil)
         }
     }
 
@@ -227,9 +230,10 @@ final class Store: ObservableObject {
                 if let tab { record.position = terminals.firstIndex { $0.id == tab.id } }
                 if record.seenAt == nil || (front != nil && tab?.id == front) { record.seenAt = now }
                 if let windowId = tab?.windowId {
-                    // A session opened in a named window joins that group.
+                    // A session opened in a named or folded window joins that group as it is.
                     let neighbours = state.records.filter { $0.id != id && tabs[$0.id]?.windowId == windowId }
                     if record.group == nil { record.group = Self.commonest(neighbours.compactMap(\.group)) }
+                    if existing == nil { record.collapsed = Self.mostlyCollapsed(neighbours) ? true : nil }
                 }
 
                 if let existing { state.records[existing] = record } else { state.records.append(record) }
@@ -276,6 +280,8 @@ final class Store: ObservableObject {
         let id: String  // the Ghostty window id
         let name: String
         let rows: [Row]
+        /// The user folded it away in the panel.
+        let collapsed: Bool
     }
 
     /// Running sessions by window, in Ghostty's window order, each in tab order.
@@ -293,7 +299,7 @@ final class Store: ObservableObject {
                     usual: Self.commonest(window.rows.map { URL(fileURLWithPath: $0.cwd).lastPathComponent }) ?? "Sessions")
         })
         return zip(windows, names).map { window, name in
-            Group(id: window.id, name: name, rows: window.rows)
+            Group(id: window.id, name: name, rows: window.rows, collapsed: Self.mostlyCollapsed(records(of: window.rows)))
         }
     }
 
@@ -304,6 +310,21 @@ final class Store: ObservableObject {
 
     private static func commonest(_ names: [String]) -> String? {
         Dictionary(grouping: names, by: { $0 }).max { ($0.value.count, $1.key) < ($1.value.count, $0.key) }?.key
+    }
+
+    /// Sessions moved between windows can disagree; most of them decide.
+    private static func mostlyCollapsed(_ records: [Record]) -> Bool {
+        records.filter { $0.collapsed == true }.count * 2 > records.count
+    }
+
+    /// Folds a group away in the panel, or opens it again. Remembered with its sessions.
+    func setCollapsed(_ windowId: String, _ collapsed: Bool) {
+        let members = Set(rows.filter { $0.windowId == windowId }.map(\.id))
+        for index in state.records.indices where members.contains(state.records[index].id) {
+            state.records[index].collapsed = collapsed ? true : nil
+        }
+        save()
+        objectWillChange.send()
     }
 
     func renameGroup(_ windowId: String, to name: String) {
