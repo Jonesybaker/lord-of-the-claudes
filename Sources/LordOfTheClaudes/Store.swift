@@ -78,6 +78,8 @@ final class Store: ObservableObject {
     private var terminals: [GhosttyTerminal] = []
     /// Each running session's tab, by session id. See TabMatch.
     private var tabs: [String: GhosttyTerminal] = [:]
+    /// Sessions `restore` has reopened that have not been seen running since. Reopening one counts as seeing it.
+    private var reopening: Set<String> = []
     private var history: [String: SessionHistory] = [:]
     private var live: [String: LiveSession] = [:]
     private var polling = false
@@ -228,7 +230,8 @@ final class Store: ObservableObject {
                 record.closedByUser = nil
                 if let lastPrompt { record.lastInteraction = lastPrompt.date }
                 if let tab { record.position = terminals.firstIndex { $0.id == tab.id } }
-                if record.seenAt == nil || (front != nil && tab?.id == front) { record.seenAt = now }
+                let reopened = reopening.remove(id) != nil
+                if record.seenAt == nil || reopened || (front != nil && tab?.id == front) { record.seenAt = now }
                 if let windowId = tab?.windowId {
                     // A session opened in a named or folded window joins that group as it is.
                     let neighbours = state.records.filter { $0.id != id && tabs[$0.id]?.windowId == windowId }
@@ -248,7 +251,10 @@ final class Store: ObservableObject {
             .map { record in
                 let session = live[record.id]
                 let sessionHistory = history[record.id]
-                let needsYou = session.map { $0.status != "busy" && $0.statusUpdatedAt > (record.seenAt ?? .distantFuture) } ?? false
+                let needsYou = session.map {
+                    Waiting.needsYou(status: $0.status, statusChangedAt: $0.statusUpdatedAt, startedAt: $0.startedAt,
+                                     seenAt: record.seenAt, lastPromptAt: sessionHistory?.prompts.last?.date)
+                } ?? false
                 let terminal = session == nil ? nil : tabs[record.id]
                 let tab = terminal.flatMap { t in
                     terminals.filter { $0.windowId == t.windowId }.firstIndex { $0.id == t.id }.map { $0 + 1 }
@@ -453,6 +459,7 @@ final class Store: ObservableObject {
     private func restore(_ ids: [String], intoRestoredTabs: Bool) async {
         guard !restoring, !ids.isEmpty else { return }
         restoring = true
+        reopening.formUnion(ids)
         defer { restoring = false }
 
         let records = ids.compactMap { id in state.records.first { $0.id == id } }

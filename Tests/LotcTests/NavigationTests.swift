@@ -65,6 +65,37 @@ struct TabMatchTests {
     }
 }
 
+struct WaitingTests {
+    struct Case: Sendable, CustomTestStringConvertible {
+        let testDescription: String
+        var status = "idle"
+        let changed: Double
+        var started: Double? = 1000
+        let seen: Double?
+        var prompted: Double? = nil
+        let waiting: Bool
+    }
+
+    static let cases: [Case] = [
+        Case(testDescription: "still working", status: "busy", changed: 2000, seen: 1500, waiting: false),
+        Case(testDescription: "finished after the user last looked", changed: 2000, seen: 1500, prompted: 1400, waiting: true),
+        Case(testDescription: "user looked after it finished", changed: 2000, seen: 2100, waiting: false),
+        Case(testDescription: "user prompted it after the status change", changed: 2000, seen: 1500, prompted: 2100, waiting: false),
+        Case(testDescription: "resumed after a restart and idle since", changed: 2000.2, started: 2000, seen: 500, waiting: false),
+        Case(testDescription: "start-up noise just after a resume", changed: 2009, started: 2000, seen: 500, waiting: false),
+        Case(testDescription: "real work after a resume", changed: 2300, started: 2000, seen: 2001, prompted: 2010, waiting: true),
+        Case(testDescription: "never seen yet", changed: 2000, seen: nil, waiting: false),
+        Case(testDescription: "no start time in its file", changed: 2000, started: nil, seen: 1500, waiting: true),
+    ]
+
+    @Test(arguments: cases)
+    func flagsOnlyWorkFinishedOutOfSight(_ c: Case) {
+        func date(_ t: Double?) -> Date? { t.map(Date.init(timeIntervalSince1970:)) }
+        #expect(Waiting.needsYou(status: c.status, statusChangedAt: date(c.changed)!, startedAt: date(c.started),
+                                 seenAt: date(c.seen), lastPromptAt: date(c.prompted)) == c.waiting)
+    }
+}
+
 struct GroupNamesTests {
     @Test func numbersRepeatsInWindowOrderAndLeavesGivenNamesAlone() {
         #expect(GroupNames.distinct([(nil, "carrington"), (nil, "carrington")]) == ["carrington", "carrington 2"])

@@ -7,6 +7,8 @@ struct LiveSession {
     let sessionId: String
     let cwd: String
     let status: String
+    /// When the process started; nil when the file does not say.
+    let startedAt: Date?
     let updatedAt: Date
     /// When `status` last changed, e.g. when Claude finished working.
     let statusUpdatedAt: Date
@@ -52,6 +54,7 @@ final class ClaudeData: @unchecked Sendable {
                 sessionId: sessionId,
                 cwd: cwd,
                 status: json["status"] as? String ?? "idle",
+                startedAt: startedAt,
                 updatedAt: Date(timeIntervalSince1970: updatedMs / 1000),
                 statusUpdatedAt: Date(timeIntervalSince1970: ((json["statusUpdatedAt"] as? Double) ?? updatedMs) / 1000)
             )
