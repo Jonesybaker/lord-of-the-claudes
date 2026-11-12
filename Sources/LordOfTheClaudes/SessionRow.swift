@@ -36,6 +36,12 @@ struct SessionRow: View {
     let toggleExpanded: () -> Void
     /// Closes a running session, or forgets a closed one.
     let remove: () -> Void
+    /// Nil when it cannot be made lord: closed, in no window, or lord already.
+    let makeLord: (() -> Void)?
+    @Binding var replyText: String
+    let replyNote: SendNote?
+    let sendReply: () -> Void
+    var focus: FocusState<PanelField?>.Binding
     @State private var hovering = false
 
     private var shortCwd: String {
@@ -56,16 +62,21 @@ struct SessionRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
+            // Only the summary jumps to the tab and has the menu: the details hold selectable text and the reply field.
             summary
+                .contentShape(Rectangle())
+                .onTapGesture { if row.isLive { activate() } }
+                .contextMenu {
+                    if let makeLord { Button("Make lord of this group", action: makeLord) }
+                }
             if expanded { details }
         }
         .background(selected ? Color.accentColor.opacity(0.25) : hovering ? Color.primary.opacity(0.08) : .clear)
         .overlay(alignment: .leading) {
-            if row.needsYou { Rectangle().fill(.orange).frame(width: 3) }
+            if row.needsYou { Rectangle().fill(Color.waiting).frame(width: 3) }
         }
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
-        .onTapGesture { if row.isLive { activate() } }
         .id(row.id)
     }
 
@@ -76,12 +87,19 @@ struct SessionRow: View {
             VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: 5) {
                     if row.needsYou {
-                        Image(systemName: "bell.fill").font(.caption).foregroundStyle(.orange)
+                        Image(systemName: "bell.fill").font(.caption).foregroundStyle(Color.waiting)
+                            .accessibilityLabel("Waiting for you")
+                    }
+                    if row.isLord {
+                        Image(systemName: "crown.fill").font(.caption).foregroundStyle(Color.lord)
+                            .help("Lord of this group")
+                            .accessibilityLabel("Lord of this group")
                     }
                     Text(row.title).lineLimit(1)
                 }
                 Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1)
             }
+            .help(row.isLive ? "Return jumps to its tab. ⌘R replies without leaving the panel." : "Return reopens it.")
             Spacer(minLength: 8)
             if !row.isLive {
                 Button("Reopen", action: activate).controlSize(.small)
@@ -89,15 +107,18 @@ struct SessionRow: View {
             if hovering {
                 Button(action: remove) { Image(systemName: "xmark") }
                     .help(row.isLive ? "Close this session and its tab (it stays under Recently closed)" : "Forget this session")
+                    .accessibilityLabel(row.isLive ? "Close this session and its tab" : "Forget this session")
             }
             if let ticket = row.ticket {
                 Button { NSWorkspace.shared.open(ticket) } label: { Image(systemName: "ticket") }
                     .help(ticket.absoluteString)
+                    .accessibilityLabel("Open the ticket")
             }
             Button(action: toggleExpanded) {
                 Image(systemName: expanded ? "chevron.down" : "chevron.right").frame(width: 12)
             }
-            .help("Show recent prompts")
+            .help(expanded ? "Hide recent prompts" : "Show recent prompts and reply")
+            .accessibilityLabel(expanded ? "Hide recent prompts" : "Show recent prompts and reply")
         }
         .buttonStyle(.borderless)
         .padding(.horizontal, 12).padding(.vertical, 5)
@@ -107,6 +128,7 @@ struct SessionRow: View {
         VStack(alignment: .leading, spacing: 5) {
             Text(shortCwd + (row.status.map { " · \($0)" } ?? " · closed"))
                 .font(.caption).foregroundStyle(.secondary)
+            if row.isLive { reply }
             if row.prompts.isEmpty {
                 Text("No prompts in Claude's history for this session.").font(.caption).foregroundStyle(.secondary)
             }
@@ -124,5 +146,18 @@ struct SessionRow: View {
         }
         .padding(.leading, 56).padding(.trailing, 12).padding(.bottom, 8)
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// Types a prompt into the session's tab without leaving the panel.
+    private var reply: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            TextField("Send a prompt", text: $replyText)
+                .textFieldStyle(.roundedBorder)
+                .focused(focus, equals: .reply(sessionId: row.id))
+                .onSubmit(sendReply)
+                .help("Return types it into the session's tab. Esc leaves the field.")
+            if let replyNote { SendNoteView(note: replyNote) }
+        }
+        .padding(.vertical, 2)
     }
 }
