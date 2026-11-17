@@ -5,7 +5,7 @@ import LotcKit
 /// Answers `lotc` on a Unix socket: one JSON line in, one JSON line out.
 @MainActor
 final class LotcServer {
-    private static var shared: LotcServer?
+    private(set) static var shared: LotcServer?
 
     let store: Store
     let permissions = PermissionQueue()
@@ -66,6 +66,8 @@ final class LotcServer {
         case .observe(let event):
             store.observe(event)
             return .accepted  // nobody waits for it
+        case .approvals:
+            return .approvals(store.approvals.report)
         default:
             break
         }
@@ -76,7 +78,16 @@ final class LotcServer {
 
     private func askPermission(_ hookInput: String, over connection: LineConnection) async -> PermissionAnswer {
         guard let input = PermissionHookInput(json: hookInput) else { return .askInTerminal }
-        let request = PermissionQueue.Request(input: input, origin: origin(of: input))
+        let origin = origin(of: input)
+
+        // Decided once, as it arrives: a rule switched on later never answers a question already waiting.
+        let sessionCwd = store.rows.first { $0.id == input.sessionId }?.cwd
+        let decision = store.approvals.decide(input, sessionCwd: sessionCwd)
+        if case .approve(let rule, let summary) = decision {
+            store.approvals.record(rule, summary: summary, tool: input.toolName, session: origin.label, cwd: input.cwd)
+            return .allow
+        }
+        let request = PermissionQueue.Request(input: input, origin: origin, note: decision.note)
 
         // The hook process goes away when the question is answered in the terminal or Claude Code times it out.
         let hangUpWatch = Task.detached { [permissions] in

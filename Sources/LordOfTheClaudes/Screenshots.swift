@@ -7,7 +7,8 @@ import SwiftUI
 enum Screenshots {
     nonisolated static let size = NSSize(width: 1040, height: 700)
 
-    static func render(into dir: URL) {
+    /// `only`: the names of the shots to take; empty takes them all. A window drawn alone draws as the active one.
+    static func render(into dir: URL, only: Set<String> = []) {
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -26,11 +27,13 @@ enum Screenshots {
                  broadcast: BroadcastDraft(groupId: "topic:checkout", text: "rebase on main and run the tests",
                                            confirming: true, recipients: ["1", "4"])),
             Shot(name: "window-narrow", appearance: .aqua, width: 640, overlay: true),
+            Shot(name: "window-auto-approve", appearance: .aqua, pane: .autoApprove),
+            Shot(name: "window-auto-approve-dark", appearance: .darkAqua, pane: .autoApprove),
         ]
         var windows: [(String, NSWindow)] = []
-        for shot in shots {
+        for shot in shots where only.isEmpty || only.contains(shot.name) {
             // Never the real chat or the user's settings: a store and chat of made-up data, remembering nothing.
-            let store = Store(demoRows: rows, groupNames: names, collapsedTopics: ["Tax"])
+            let store = Store(demoRows: rows, groupNames: names, collapsedTopics: ["Tax"], approvals: demoApprovals())
             let model = WindowModel(store: store, chat: shot.chat?(store.overseerPlaces) ?? OverseerChat(demo: []), defaults: nil)
             model.grouping = shot.grouping
             model.pane = shot.pane
@@ -76,6 +79,36 @@ enum Screenshots {
         var chat: ((_ places: [SessionPlace]) -> OverseerChat)?
         var width: CGFloat = Screenshots.size.width
         var overlay = false
+    }
+
+    /// Three rules on, one directory kept private, and a morning of made-up approvals.
+    private static func demoApprovals() -> AutoApprovals {
+        func ago(_ minutes: Double) -> Date { Date().addingTimeInterval(-minutes * 60) }
+        let home = NSHomeDirectory() + "/Projects/"
+        let entries: [(Double, String, String, String, String, AutoApproveRule)] = [
+            (26 * 60, "Coach to Old Trafford (Home, tab 2)", "home", "WebSearch",
+             "Manchester United home fixtures December", .webSearch),
+            (190, "Release notes for 2.4 (Shop, tab 3)", "shop-web", "Bash",
+             "curl -sI https://github.com/example-shop/shop-web/releases", .shellGet),
+            (75, "Cottage for the half-term break (Home, tab 1)", "home", "WebFetch",
+             "https://www.example-cottages.co.uk/devon/dog-friendly?sleeps=4", .publicFetch),
+            (48, "Migrate auth to passkeys (Shop, tab 1) · subagent Explore", "shop-web", "WebFetch",
+             "https://webauthn.guide/", .publicFetch),
+            (31, "Fix broken links in the guides (Docs, tab 1)", "docs", "Bash",
+             "curl -s -o /dev/null -w '%{http_code}' https://docs.example.com/guides/returns", .shellGet),
+            (14, "Invoice PDF rounding bug (Platform, tab 2)", "billing", "WebSearch",
+             "VAT rounding per line or per invoice UK", .webSearch),
+            (9, "Upgrade to Postgres 17 (Platform, tab 1)", "infra", "WebFetch",
+             "https://www.postgresql.org/docs/17/upgrading.html", .publicFetch),
+            (6, "Fix flaky checkout test (Shop, tab 2) · subagent Explore", "shop-api", "WebSearch",
+             "seeded random numbers in jest tests", .webSearch),
+            (2, "Coach to Old Trafford (Home, tab 2)", "home", "WebSearch",
+             "coach Leeds to Old Trafford Saturday 06:40", .webSearch),
+        ]
+        let log = entries.map { minutes, session, folder, tool, summary, rule in
+            ApprovalLogEntry(at: ago(minutes), session: session, cwd: home + folder, tool: tool, summary: summary, rule: rule.rawValue)
+        }
+        return AutoApprovals(demo: AutoApproveSettings(isOn: true, excludedDirectories: ["~/Projects/finances"]), log: log)
     }
 
     /// Four made-up Ghostty windows: "Shop" (w1, its lord the passkeys session), "Platform" (w2), "Docs" (w3)
@@ -165,6 +198,10 @@ enum Screenshots {
                 window: "w4", tab: 3,
                 digests: digests("Check what working from home costs can be claimed", [(296, "Explained the flat rate against actual costs")]),
                 topic: "Tax", pinned: true),
+            row("15", "Mortgage paperwork", "finances", status: "idle", last: 400,
+                prompts: [(400, "list the documents the lender still wants")],
+                window: "w4", tab: 4,
+                digests: digests("List the documents the lender wants", [(395, "Three documents still to find")])),
             row("8", "Onboarding email copy", "marketing", status: nil, last: 2 * 24 * 60,
                 prompts: [(2 * 24 * 60, "shorten the welcome email to five lines")],
                 digests: digests("Cut the welcome email to five lines",

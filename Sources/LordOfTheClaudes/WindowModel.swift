@@ -1,10 +1,11 @@
 import Combine
 import SwiftUI
 
-/// What the main area shows: the chat with the overseer, or one session.
+/// What the main area shows: the chat with the overseer, one session, or the auto-approve rules.
 enum MainPane: Equatable {
     case chat
     case session(String)
+    case autoApprove
 }
 
 /// The main window's state and actions, apart from its views, so the keys, the menus and the menu bar
@@ -125,6 +126,12 @@ final class WindowModel: ObservableObject {
     }
 
     func showDetail() { if let row = selectedRow { show(row) } }
+
+    func showAutoApprove() {
+        pane = .autoApprove
+        if compact { overlayOpen = false }
+        focusRequests.send(nil)
+    }
 
     func showChat() {
         pane = .chat

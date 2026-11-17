@@ -26,6 +26,8 @@ public enum LotcCommand: Codable, Sendable, Equatable {
     case observe(StopEvent)
     /// The digests of one tab, the caller's window, or with `all` every window.
     case digest(tab: String?, all: Bool)
+    /// The auto-approve switches and log, to read. Nothing in `lotc` changes them.
+    case approvals
 }
 
 /// The app's one-line answer to a request.
@@ -38,6 +40,7 @@ public enum LotcResponse: Codable, Sendable, Equatable {
     case permission(PermissionAnswer)
     /// Plain text meant to be read by a model.
     case briefing(String)
+    case approvals(AutoApproveReport)
     case accepted
     case failure(String)
 }

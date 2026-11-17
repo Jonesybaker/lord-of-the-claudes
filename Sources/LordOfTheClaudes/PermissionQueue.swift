@@ -8,6 +8,8 @@ final class PermissionQueue: ObservableObject {
         let id = UUID()
         let input: PermissionHookInput
         let origin: Origin
+        /// Why no auto-approve rule took it, when one for its tool is on.
+        var note: String? = nil
     }
 
     /// Where a request came from, worked out when it arrived.

@@ -17,6 +17,9 @@ enum Lotc {
                                                 what it is blocked on; --all for every window
           lotc hooks install|uninstall|status   answer permission prompts in Lord of the Claudes, and summarise
                                                 each session when Claude stops
+          lotc approvals [--json]               what the auto-approve rules approved lately, newest first
+          lotc approvals status [--json]        the auto-approve master switch, each rule's switch and the
+                                                excluded directories
           lotc permission                       the permission hook itself; Claude Code runs it
           lotc observe                          the Stop hook itself; Claude Code runs it
 
@@ -24,7 +27,10 @@ enum Lotc {
         A <prompt> of "-" is read from stdin.
         wait gives up after \(Int(defaultWaitTimeout)) seconds unless told otherwise, inside Claude Code's two-minute
         Bash limit; run it again to keep waiting.
-        Run lotc from a Claude Code session in Ghostty, with Lord of the Claudes running.
+        No lotc command switches an auto-approve rule on or off: a session must never widen its own
+        permissions. Change them on the Auto-approve page in Lord of the Claudes.
+        Run lotc from a Claude Code session in Ghostty, with Lord of the Claudes running. digest --all and
+        approvals work from any terminal.
         Exit status: 0 done, 1 could not be done, 2 the command line is wrong.
         """
 
@@ -39,6 +45,7 @@ enum Lotc {
         case last(tab: String)
         case lord
         case digest(tab: String?, all: Bool)
+        case approvals(status: Bool, json: Bool)
         case hooks(HookCommand.Action)
         case permission
         case observe
@@ -104,6 +111,13 @@ enum Lotc {
             return .hooks(action)
         case "digest":
             return try parseDigest(rest)
+        case "approvals":
+            let status = rest.first == "status"
+            let flags = status ? rest.dropFirst() : rest[...]
+            guard flags.allSatisfy({ $0 == "--json" }), flags.count <= 1 else {
+                throw UsageError(message: "approvals takes status and --json only: lotc approvals status")
+            }
+            return .approvals(status: status, json: !flags.isEmpty)
         case "permission":
             return .permission
         case "observe":
@@ -153,8 +167,9 @@ enum Lotc {
     private static func talkToApp(_ invocation: Invocation) -> Int32 {
         let claudeHome = ClaudeHome.url
         let caller = Caller.sessionId(claudeHome: claudeHome)
-        // Every window's digests need no window of the caller's own, so they work from any terminal.
-        if caller == nil, invocation != .digest(tab: nil, all: true) {
+        // Every window's digests and the approvals need no window of the caller's own, so they work from any terminal.
+        let anywhere = if case .approvals = invocation { true } else { invocation == .digest(tab: nil, all: true) }
+        if caller == nil, !anywhere {
             return fail("run lotc from a Claude Code session. None of its parent processes is in \(claudeHome.path)/sessions.")
         }
 
@@ -175,6 +190,8 @@ enum Lotc {
             (command, timeout) = (.lord, 15)
         case .digest(let tab, let all):
             (command, timeout) = (.digest(tab: tab, all: all), 15)
+        case .approvals:
+            (command, timeout) = (.approvals, 15)
         case .help, .hooks, .permission, .observe:
             return 2
         }
@@ -189,6 +206,15 @@ enum Lotc {
             return fail("Lord of the Claudes is not running, or is too old for lotc: nothing is listening on \(path).")
         } catch {
             return fail("lost touch with Lord of the Claudes: \(error)")
+        }
+        if case .approvals(let status, let json) = invocation, case .approvals(let report) = response {
+            switch (status, json) {
+            case (true, true): print(encoded(report.settings))
+            case (true, false): print(ApprovalsText.status(report.settings))
+            case (false, true): print(encoded(report.log))
+            case (false, false): print(ApprovalsText.log(report.log))
+            }
+            return 0
         }
         return show(response, json: invocation == .list(json: true))
     }
@@ -223,6 +249,8 @@ enum Lotc {
         case .briefing(let text):
             print(text)
             return 0
+        case .approvals:
+            return fail("Lord of the Claudes sent the approvals unasked.")
         case .permission, .accepted:
             return fail("Lord of the Claudes sent an answer meant for a hook.")
         }
@@ -252,7 +280,7 @@ enum Lotc {
         session.isWorking ? "working" : session.status
     }
 
-    private static func encoded(_ listing: WindowListing) -> String {
+    private static func encoded(_ listing: some Encodable) -> String {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
         encoder.dateEncodingStrategy = .iso8601

@@ -191,6 +191,11 @@ struct PermissionView: View {
                 Text(request.origin.label).font(.headline)
                 Text(request.origin.detail).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
             }
+            if let note = request.note {
+                Label(note, systemImage: "checkmark.shield")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .help("Lord of the Claudes' auto-approve rules looked at this and left it to you")
+            }
             PreviewBody(preview: ToolPreview(toolName: request.input.toolName, input: request.input.toolInput))
             TextField("Tell Claude what to do instead (Return sends it)", text: $prompt.instead)
                 .textFieldStyle(.roundedBorder)

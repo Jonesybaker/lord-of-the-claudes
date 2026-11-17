@@ -103,6 +103,8 @@ struct MainView: View {
             if !store.pending.isEmpty { pendingBanner }
             if let row = model.shownSession {
                 SessionDetail(row: row, model: model, focus: $focus)
+            } else if model.pane == .autoApprove {
+                AutoApprovePage(model: model, approvals: store.approvals)
             } else {
                 ChatView(chat: chat, model: model, focus: $focus)
             }
