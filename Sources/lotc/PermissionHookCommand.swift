@@ -5,7 +5,9 @@ import LotcKit
 /// given in Lord of the Claudes. It fails open: whatever goes wrong, it exits 0 with no output,
 /// and Claude Code asks in the terminal as it would without the hook.
 enum PermissionHookCommand {
-    static func run() -> Int32 {
+    static func run(environment: [String: String] = ProcessInfo.processInfo.environment) -> Int32 {
+        // The observer's own summariser run must never reach the permission window.
+        guard !ObserverRun.isActive(environment) else { return 0 }
         let deadline = Date().addingTimeInterval(PermissionHook.deadline)
         // Whatever blocks, never be the hook Claude Code has to kill.
         DispatchQueue.global().asyncAfter(deadline: .now() + PermissionHook.deadline) { exit(0) }

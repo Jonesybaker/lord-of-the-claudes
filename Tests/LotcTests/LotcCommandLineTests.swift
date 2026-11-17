@@ -19,30 +19,39 @@ struct LotcCommandLineTests {
         #expect(try Lotc.parse(["lord"]) == .lord)
         #expect(try Lotc.parse(["hooks", "install"]) == .hooks(.install))
         #expect(try Lotc.parse(["permission"]) == .permission)
+        #expect(try Lotc.parse(["observe"]) == .observe)
+        #expect(try Lotc.parse(["digest"]) == .digest(tab: nil, all: false))
+        #expect(try Lotc.parse(["digest", "2"]) == .digest(tab: "2", all: false))
+        #expect(try Lotc.parse(["digest", "--all"]) == .digest(tab: nil, all: true))
     }
 
     @Test(arguments: [["send", "2"], ["broadcast"], ["wait"], ["wait", "2", "--timeout"], ["wait", "2", "--timeout", "soon"],
-                      ["wait", "2", "3"], ["last"], ["lord", "now"], ["hooks"], ["hooks", "remove"], ["list", "--all"], ["frobnicate"]])
+                      ["wait", "2", "3"], ["last"], ["lord", "now"], ["hooks"], ["hooks", "remove"], ["list", "--all"], ["frobnicate"],
+                      ["digest", "1", "2"], ["digest", "--all", "2"], ["digest", "--json"]])
     func rejectsWhatItCannotUnderstand(_ arguments: [String]) {
         #expect(throws: Lotc.UsageError.self) { try Lotc.parse(arguments) }
     }
 
-    @Test func listsTheWindowAsATable() {
-        func session(_ tab: Int, _ title: String, _ status: String, waiting: Bool = false, lord: Bool = false, me: Bool = false) -> SessionSummary {
+    @Test func listsTheWindowAsATableWithEachStateLineUnderItsTitle() {
+        func session(_ tab: Int, _ title: String, _ status: String, waiting: Bool = false, lord: Bool = false,
+                     me: Bool = false, state: String? = nil) -> SessionSummary {
             SessionSummary(tab: tab, title: title, sessionId: "\(tab)", cwd: "/x", status: status,
-                           waitingForYou: waiting, isLord: lord, isCaller: me)
+                           waitingForYou: waiting, isLord: lord, isCaller: me,
+                           digest: state.map { Digest(goal: "g", state: $0, at: Date()) })
         }
         let listing = WindowListing(group: "united", sessions: [
-            session(1, "Plan the treble", "busy", lord: true, me: true),
+            session(1, "Plan the treble", "busy", lord: true, me: true, state: "League and cup fixtures mapped"),
             session(2, "Scout the Stretford End", "idle", waiting: true),
-            session(10, "Old Trafford roof", "idle"),
+            session(10, "Old Trafford roof", "idle", state: "Quotes in from three roofers"),
         ])
         #expect(Lotc.table(listing) == """
             united: 3 sessions
             TAB  STATUS   WAITING  LORD  TITLE
             1    working           yes   Plan the treble  (you)
+                                         League and cup fixtures mapped
             2    idle     yes            Scout the Stretford End
             10   idle                    Old Trafford roof
+                                         Quotes in from three roofers
             """)
     }
 
@@ -60,6 +69,10 @@ struct LotcCommandLineTests {
 
         let response = LotcResponse.permission(.deny(message: "no", interrupt: true))
         #expect(try JSONDecoder().decode(LotcResponse.self, from: JSONEncoder().encode(response)) == response)
+
+        let stop = LotcRequest(caller: nil, command: .observe(StopEvent(sessionId: "s", transcriptPath: "/t.jsonl",
+                                                                        cwd: "/c", lastAssistantMessage: "Done.")))
+        #expect(try JSONDecoder().decode(LotcRequest.self, from: JSONEncoder().encode(stop)).command == stop.command)
     }
 
     @Test func findsTheCallingSessionInTheRegistry() throws {
@@ -77,5 +90,44 @@ struct LotcCommandLineTests {
         #expect(registry.count == 2)
         #expect(registry[me]?.matches(ProcessEntry(pid: me)!) == true)
         #expect(registry[1]?.matches(ProcessEntry(pid: me)!) == false)
+    }
+}
+
+struct ObserveCommandTests {
+    @Test func standsAsideInTheObserversOwnSummariserRun() {
+        var sent: [LotcRequest] = []
+        var readStdin = false
+        let status = ObserveCommand.run(environment: [ObserverRun.variable: "1"],
+                                        readInput: { readStdin = true; return Data() }, send: { sent.append($0) })
+        #expect(status == 0 && sent.isEmpty && !readStdin)
+        // Returns before it reads stdin or arms its watchdog, so this cannot hang or end the test run.
+        #expect(PermissionHookCommand.run(environment: [ObserverRun.variable: "1"]) == 0)
+    }
+
+    @Test func passesTheStopOnInOneRequest() {
+        var sent: [LotcRequest] = []
+        let input = """
+            {"session_id":"abc","transcript_path":"/t/abc.jsonl","cwd":"/Users/fan/united","permission_mode":"default",
+             "hook_event_name":"Stop","stop_hook_active":false,"last_assistant_message":"Team sheet ready.",
+             "background_tasks":[],"session_crons":[]}
+            """
+        #expect(ObserveCommand.run(environment: [:], readInput: { Data(input.utf8) }, send: { sent.append($0) }) == 0)
+        #expect(sent.map(\.command) == [.observe(StopEvent(sessionId: "abc", transcriptPath: "/t/abc.jsonl",
+                                                           cwd: "/Users/fan/united", lastAssistantMessage: "Team sheet ready."))])
+    }
+
+    @Test(arguments: ["", "not json", "[]", #"{"hook_event_name":"Stop"}"#, #"{"session_id":""}"#])
+    func saysNothingAndSendsNothingForJunk(_ input: String) {
+        var sent: [LotcRequest] = []
+        #expect(ObserveCommand.run(environment: [:], readInput: { Data(input.utf8) }, send: { sent.append($0) }) == 0)
+        #expect(sent.isEmpty)
+    }
+
+    @Test func keepsTheEndOfALongReply() throws {
+        let long = String(repeating: "a", count: 5000) + " Shall I merge?"
+        let event = try #require(StopEvent(hookInput: .object([JSONMember("session_id", .string("s")),
+                                                               JSONMember("last_assistant_message", .string(long))])))
+        #expect(event.lastAssistantMessage?.count == StopEvent.messageCap)
+        #expect(event.lastAssistantMessage?.hasSuffix("Shall I merge?") == true)
     }
 }

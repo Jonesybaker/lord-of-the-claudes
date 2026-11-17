@@ -16,4 +16,15 @@ public struct Digest: Codable, Equatable, Sendable {
         self.blockedOn = blockedOn
         self.at = at
     }
+
+    public static let historyLimit = 20
+
+    /// `history` with `latest` as its last entry: added when the state line has moved on, else in place of
+    /// the last one, so the history is a list of distinct steps. Only the newest `historyLimit` are kept.
+    public static func history(_ history: [Digest], adding latest: Digest) -> [Digest] {
+        var result = history
+        if result.last?.state == latest.state { result.removeLast() }
+        result.append(latest)
+        return Array(result.suffix(historyLimit))
+    }
 }
