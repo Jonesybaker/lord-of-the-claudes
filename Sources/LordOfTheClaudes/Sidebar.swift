@@ -28,6 +28,7 @@ struct Sidebar: View {
             }
             .padding(.horizontal, 12).padding(.vertical, 8)
             overseerRow
+            AutoApproveSidebarRow(model: model, approvals: store.approvals)
             Divider()
             list
             if !model.stale.isEmpty { staleBanner }

@@ -101,6 +101,11 @@ struct SessionMarks: View {
                 .help("Lord of its window")
                 .accessibilityLabel("Lord of its window")
         }
+        if row.isPrivate {
+            Image(systemName: "lock.fill").font(.caption).foregroundStyle(.secondary)
+                .help("Private: its directory is excluded, so it is never summarised, briefed or auto-approved")
+                .accessibilityLabel("Private")
+        }
     }
 }
 
@@ -144,6 +149,7 @@ enum SessionText {
     /// What it is blocked on, else where it has got to, else the last prompt. A prompt newer than the
     /// digest is the newer news: the digest is from before Claude took it up.
     static func doing(_ row: Row) -> String {
+        if row.isPrivate { return "Private" }
         let prompt = row.prompts.last
         if let digest = row.digest, prompt.map({ $0.date <= digest.at }) ?? true {
             return digest.blockedOn.map { "Needs you: " + $0 } ?? digest.state

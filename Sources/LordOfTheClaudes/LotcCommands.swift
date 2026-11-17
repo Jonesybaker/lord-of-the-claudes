@@ -63,7 +63,7 @@ extension LotcServer {
             case .success(let row): return .briefing(DigestBriefing.text([.init(name: group.name, rows: [row])]))
             }
 
-        case .permission, .observe:
+        case .permission, .observe, .approvals:
             return .failure("Hooks are answered elsewhere.")
         }
     }

@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import Foundation
 import LotcKit
 import ServiceManagement
@@ -53,7 +54,7 @@ struct Row: Identifiable {
     let lastInteraction: Date
     /// Claude has stopped and the user has not looked at the tab since.
     let needsYou: Bool
-    let prompts: [(date: Date, text: String)]
+    var prompts: [(date: Date, text: String)]
     let ticket: URL?
     /// The Ghostty window its tab is in; nil when closed or when its tab cannot be found.
     var windowId: String? = nil
@@ -66,6 +67,8 @@ struct Row: Identifiable {
     /// The topic given by the observer or the user; see `topicName`.
     var topic: String? = nil
     var topicPinned = false
+    /// Its directory is excluded: it shows by title only, and no model hears of it.
+    var isPrivate = false
 
     /// The topic group it shows in: its topic, else its project folder.
     var topicName: String { topic ?? Topics.folder(of: cwd) }
@@ -87,7 +90,12 @@ final class Store: ObservableObject {
     @Published var summarise: Bool { didSet { if !isDemo { UserDefaults.standard.set(summarise, forKey: "summarise") } } }
     /// Questions from `lotc permission` waiting in the permission window; kept up to date by LotcServer.
     @Published var permissionRequestCount = 0
+    /// The auto-approve rules, and the excluded directories that also keep sessions private.
+    let approvals: AutoApprovals
     private var isDemo = false
+    /// The made-up rows as given, before any are made private.
+    private var demoSource: [Row] = []
+    private var privacyWatch: AnyCancellable?
 
     var liveCount: Int { rows.filter(\.isLive).count }
     var needsYouCount: Int { rows.filter(\.needsYou).count }
@@ -119,12 +127,14 @@ final class Store: ObservableObject {
 
     /// Made-up sessions for README screenshots: reads and writes nothing, and never polls or types into Ghostty.
     /// `groupNames` names the made-up windows, by window id; `collapsed` lists the folded ones.
-    init(demoRows: [Row], groupNames: [String: String] = [:], collapsed: Set<String> = [], collapsedTopics: [String] = []) {
+    init(demoRows: [Row], groupNames: [String: String] = [:], collapsed: Set<String> = [], collapsedTopics: [String] = [],
+         approvals: AutoApprovals? = nil) {
         autoRestore = true
         launchAtLogin = false
         summarise = true
         isDemo = true
-        rows = demoRows
+        self.approvals = approvals ?? AutoApprovals(demo: AutoApproveSettings(), log: [])
+        demoSource = demoRows
         ghosttyRunning = true
         // Stand-in tabs, so `groups` finds the windows the rows say they are in.
         terminals = demoRows
@@ -141,6 +151,8 @@ final class Store: ObservableObject {
                    topic: row.topic, topicPinned: row.topicPinned ? true : nil)
         }
         state.collapsedTopics = collapsedTopics.map { $0.lowercased() }
+        rows = demoRows.map(withPrivacy)
+        watchPrivacy()
     }
 
     init() {
@@ -153,6 +165,7 @@ final class Store: ObservableObject {
             defaults.set(true, forKey: "autoRestore")
             launchAtLogin = true  // useless after a reboot unless it starts by itself
         }
+        approvals = AutoApprovals(files: .standard)
 
         if !Sandbox.isOn, let saved = try? Data(contentsOf: stateURL),
            let decoded = try? JSONDecoder().decode(SavedState.self, from: saved) {
@@ -170,6 +183,7 @@ final class Store: ObservableObject {
             self?.record(digest, for: id)
         }
         LotcServer.start(store: self)
+        watchPrivacy()
 
         Task {
             while true {
@@ -302,6 +316,40 @@ final class Store: ObservableObject {
                 )
             }
             .sorted { ($0.needsYou ? 1 : 0, $0.lastInteraction) > ($1.needsYou ? 1 : 0, $1.lastInteraction) }
+            .map(withPrivacy)
+    }
+
+    // MARK: Privacy
+
+    /// A session in an excluded directory shows its title only: no summary and no prompts.
+    private func withPrivacy(_ row: Row) -> Row {
+        guard approvals.isExcluded(row.cwd) else { return row }
+        var row = row
+        row.isPrivate = true
+        row.digest = nil
+        row.digestHistory = []
+        row.prompts = []
+        return row
+    }
+
+    private func isPrivate(_ event: StopEvent) -> Bool {
+        if let cwd = event.cwd, approvals.isExcluded(cwd) { return true }
+        return state.records.first { $0.id == event.sessionId }.map { approvals.isExcluded($0.cwd) } ?? false
+    }
+
+    private func watchPrivacy() {
+        // A beat later, once `settings` holds the new list.
+        privacyWatch = approvals.$settings.map(\.excludedDirectories).removeDuplicates().dropFirst()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                guard let self else { return }
+                if isDemo {
+                    rows = demoSource
+                    refreshRowsFromRecords()
+                } else {
+                    rebuildRows()
+                }
+            }
     }
 
     /// Claude's own title, else the one we had, else its last prompt, else its directory.
@@ -398,8 +446,11 @@ final class Store: ObservableObject {
     /// Claude has stopped in a session: the observer sums it up. Only sessions the app tracks, so a
     /// `claude -p` run by some script costs nothing.
     func observe(_ event: StopEvent) {
-        guard summarise, let observer else { return }
-        let known = { [weak self] in self?.state.records.contains { $0.id == event.sessionId } == true }
+        guard summarise, let observer, !isPrivate(event) else { return }
+        let known = { [weak self] in
+            guard let self else { return false }
+            return state.records.contains { $0.id == event.sessionId } && !isPrivate(event)
+        }
         if known() {
             observer.stopped(event)
         } else {
@@ -412,7 +463,9 @@ final class Store: ObservableObject {
     }
 
     func record(_ digest: Digest, for sessionId: String) {
-        guard let index = state.records.firstIndex(where: { $0.id == sessionId }) else { return }
+        guard let index = state.records.firstIndex(where: { $0.id == sessionId }),
+              !approvals.isExcluded(state.records[index].cwd)
+        else { return }
         let record = state.records[index]
         state.records[index].topic = Topics.next(
             current: record.topic, pinned: record.topicPinned == true, proposed: digest.topic,
@@ -429,8 +482,11 @@ final class Store: ObservableObject {
     var topicsInUse: [String] { Topics.ranked(state.records.compactMap(\.topic)) }
 
     /// What the observer is told when it sums this session up.
+    /// Private sessions' topics are left out: their names could say what the session is about.
     func topicContext(for sessionId: String) -> TopicContext {
-        TopicContext(current: state.records.first { $0.id == sessionId }?.topic, inUse: topicsInUse)
+        let shareable = state.records.filter { !approvals.isExcluded($0.cwd) }
+        return TopicContext(current: state.records.first { $0.id == sessionId }?.topic,
+                            inUse: Topics.ranked(shareable.compactMap(\.topic)))
     }
 
     var collapsedTopics: Set<String> { Set(state.collapsedTopics ?? []) }
@@ -497,7 +553,7 @@ final class Store: ObservableObject {
             row.digestHistory = record.digestHistory ?? []
             row.topic = record.topic
             row.topicPinned = record.topicPinned == true
-            return row
+            return withPrivacy(row)
         }
     }
 

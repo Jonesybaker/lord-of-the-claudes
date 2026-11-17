@@ -11,7 +11,8 @@ enum DigestBriefing {
 
     static func text(_ groups: [Group], now: Date = Date(),
                      home: String = FileManager.default.homeDirectoryForCurrentUser.path) -> String {
-        let groups = groups.filter { !$0.rows.isEmpty }
+        // Private sessions are left out altogether: a model reads this.
+        let groups = groups.map { Group(name: $0.name, rows: $0.rows.filter { !$0.isPrivate }) }.filter { !$0.rows.isEmpty }
         let rows = groups.flatMap(\.rows)
         guard !rows.isEmpty else { return "No Claude Code sessions are open." }
         let waiting = rows.filter(\.needsYou).count
