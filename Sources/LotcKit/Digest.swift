@@ -9,12 +9,15 @@ public struct Digest: Codable, Equatable, Sendable {
     /// What it needs from the user; nil when nothing.
     public var blockedOn: String?
     public var at: Date
+    /// The topic the observer would file the session under. Nil in digests from before topics.
+    public var topic: String?
 
-    public init(goal: String, state: String, blockedOn: String? = nil, at: Date) {
+    public init(goal: String, state: String, blockedOn: String? = nil, at: Date, topic: String? = nil) {
         self.goal = goal
         self.state = state
         self.blockedOn = blockedOn
         self.at = at
+        self.topic = topic
     }
 
     public static let historyLimit = 20

@@ -1,25 +1,49 @@
-import Carbon.HIToolbox
+import AppKit
 import SwiftUI
 
+/// The app: a menu bar icon and a window it shows and hides. It starts with the window hidden.
+@MainActor
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    private var store: Store!
+    private var window: MainWindow!
+    private var statusItem: StatusItem!
+    private var menu: MainMenu!
+    /// Lets a script show or hide the window: `pkill -USR1 -x LordOfTheClaudes`.
+    private var toggleSignal: DispatchSourceSignal?
 
-struct MenuBarApp: App {
-    @StateObject private var store = Store()
-
-    private var icon: String {
-        if store.needsYouCount > 0 { return "bell.badge" }
-        return store.pending.isEmpty ? "rectangle.stack" : "rectangle.stack.badge.plus"
+    static func run() {
+        let app = NSApplication.shared
+        let delegate = AppDelegate()
+        app.delegate = delegate
+        app.setActivationPolicy(.accessory)
+        withExtendedLifetime(delegate) { app.run() }
     }
 
-    var body: some Scene {
-        MenuBarExtra {
-            PanelView(store: store)
-        } label: {
-            Image(systemName: icon)
-            // "2/20": two of twenty sessions are waiting for you.
-            Text(store.needsYouCount > 0 ? "\(store.needsYouCount)/\(store.liveCount)" : "\(store.liveCount)")
-        }
-        .menuBarExtraStyle(.window)
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        NSApp.applicationIconImage = AppIcon.make()
+        store = Store()
+        let model = WindowModel(store: store, chat: .shared)
+        window = MainWindow(model: model)
+        statusItem = StatusItem(store: store, toggle: { [weak self] in self?.window.toggle() },
+                                show: { [weak self] in self?.window.show() })
+        menu = MainMenu(model: model, window: window)
+        menu.install()
+        HotKey.register { [weak self] in self?.window.toggle() }
+
+        signal(SIGUSR1, SIG_IGN)
+        let source = DispatchSource.makeSignalSource(signal: SIGUSR1, queue: .main)
+        source.setEventHandler { [weak self] in MainActor.assumeIsolated { self?.window.toggle() } }
+        source.resume()
+        toggleSignal = source
     }
+
+    /// A click on the Dock icon, or opening the app again from Finder.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        window.show()
+        return false
+    }
+
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 }
 
 /// "now", "12m", "23h", "5d", "2w".
@@ -35,9 +59,9 @@ func shortAge(_ date: Date, now: Date = Date()) -> String {
 }
 
 extension Color {
-    /// Orange for "waiting for you", dark enough to read as text on the light panel.
+    /// Orange for "waiting for you", dark enough to read as text on the light window.
     static let waiting = adaptive(light: (0.63, 0.31, 0), dark: (1, 0.62, 0.04))
-    /// Gold for the lord's crown, at 3:1 or better against the panel in both themes.
+    /// Gold for the lord's crown, at 3:1 or better against the window in both themes.
     static let lord = adaptive(light: (0.54, 0.37, 0), dark: (1, 0.8, 0.2))
 
     private static func adaptive(light: (CGFloat, CGFloat, CGFloat), dark: (CGFloat, CGFloat, CGFloat)) -> Color {
@@ -45,27 +69,5 @@ extension Color {
             let rgb = appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? dark : light
             return NSColor(srgbRed: rgb.0, green: rgb.1, blue: rgb.2, alpha: 1)
         })
-    }
-}
-
-/// Catches key presses in the panel before the search field's text editor swallows them
-/// (it treats the arrow keys as cursor movement).
-final class PanelKeys {
-    /// Returns true if it used the key, which then goes no further.
-    var handler: ((NSEvent) -> Bool)?
-    private var monitor: Any?
-
-    init() {
-        monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard event.window?.className.contains("MenuBarExtraWindow") == true,
-                  self?.handler?(event) == true
-            else { return event }
-            return nil
-        }
-    }
-
-    // SwiftUI builds a throwaway PanelKeys each time it re-creates the panel's view; each must remove its monitor.
-    deinit {
-        if let monitor { NSEvent.removeMonitor(monitor) }
     }
 }

@@ -3,7 +3,7 @@ import Foundation
 /// A running session as the overseer names it: its group (Ghostty window) and tab.
 struct SessionPlace: Equatable, Sendable {
     let rowId: String
-    /// The group's name as the panel shows it; "Other" when its tab cannot be found.
+    /// The window's name as the sidebar shows it; "Other" when its tab cannot be found.
     let group: String
     let windowId: String?
     let tab: Int?
@@ -91,12 +91,20 @@ enum Proposal: Equatable {
     case send(targets: [ProposedTarget], prompt: String)
     case newSession(group: String?, cwd: String, prompt: String)
     case choose(question: String?, candidates: [ProposedTarget], prompt: String)
+    /// Bring a session's tab to the front, for the user to look at themselves.
+    case goTo(target: ProposedTarget)
+
+    static let goToActions: Set<String> = ["goto", "go_to", "go-to", "go"]
 
     init?(json: Any) {
-        guard let object = json as? [String: Any], let action = object["action"] as? String,
-              let prompt = (object["prompt"] as? String)?.trimmedNonEmpty
-        else { return nil }
+        guard let object = json as? [String: Any], let action = object["action"] as? String else { return nil }
         let targets = { (key: String) in (object[key] as? [Any] ?? []).compactMap(ProposedTarget.init(json:)) }
+        if Self.goToActions.contains(action.lowercased()) {
+            guard let target = object["target"].flatMap(ProposedTarget.init(json:)) ?? targets("targets").first else { return nil }
+            self = .goTo(target: target)
+            return
+        }
+        guard let prompt = (object["prompt"] as? String)?.trimmedNonEmpty else { return nil }
         switch action {
         case "send":
             let found = targets("targets")
@@ -177,6 +185,11 @@ enum AnswerText {
             else { return label }
             return "[\(label)](\(scheme)://\(place.rowId))"
         }
+    }
+
+    /// The words alone, each link's text kept: for a one-line preview.
+    static func plain(_ text: String) -> String {
+        text.replacing(#/\[(?<label>[^\]\n]+)\]\([^)\n]*\)/#) { String($0.label) }
     }
 
     static func attributed(_ text: String, places: [SessionPlace]) -> AttributedString {

@@ -131,6 +131,7 @@ struct TargetMatchTests {
                 == "[Scout Rashford](lotc-session://b) is done; Sign Bellingham is not open.")
         #expect(AnswerText.sessionId(in: URL(string: "lotc-session://b")!) == "b")
         #expect(AnswerText.sessionId(in: URL(string: "https://b")!) == nil)
+        #expect(AnswerText.plain(text) == "Scout Rashford is done; Sign Bellingham is not open.")
     }
 }
 
@@ -196,6 +197,7 @@ private final class FakeHost: OverseerHost {
     var overseerPlaces = places
     private(set) var sent: [(text: String, sessionId: String)] = []
     private(set) var started: [(prompt: String, cwd: String, windowId: String?)] = []
+    private(set) var wentTo: [String] = []
 
     func digestBriefing() -> String { "Group \"United\": ..." }
 
@@ -207,6 +209,11 @@ private final class FakeHost: OverseerHost {
     func startSession(prompt: String, cwd: String, windowId: String?) async -> Ghostty.NewTab? {
         started.append((prompt, cwd, windowId))
         return .inItsWindow
+    }
+
+    func goTo(session sessionId: String) -> Bool {
+        wentTo.append(sessionId)
+        return true
     }
 }
 
@@ -263,7 +270,7 @@ struct ConfirmGateTests {
         await chat.confirm(using: host, fromKeyboard: true)
         #expect(host.sent.isEmpty)
         arm(chat)
-        chat.panelOpened()  // reopening the panel shows it afresh
+        chat.windowShown()  // showing the window again shows it afresh
         await chat.confirm(using: host, fromKeyboard: true)
         #expect(host.sent.isEmpty)
         arm(chat)
@@ -460,28 +467,191 @@ struct OverseerPlumbingTests {
     }
 }
 
-struct OverseerKeysTests {
-    private func route(_ code: Int, _ characters: String = "", _ modifiers: NSEvent.ModifierFlags = [],
-                       focus: PanelField?, empty: Bool = true) -> OverseerKeys.Route {
-        OverseerKeys.route(keyCode: code, modifiers: modifiers, characters: characters, focus: focus, chatIsEmpty: empty)
+struct GoToProposalTests {
+    @Test func readsAGoToAndKeepsItOutOfTheText() {
+        let answer = OverseerAnswer.parse("""
+            The diff is in its tab, so that is the place to look.
+            ```lotc
+            {"action": "goto", "target": {"group": "Shop", "tab": 1, "title": "Fix flaky checkout test"}}
+            ```
+            """)
+        #expect(answer.text == "The diff is in its tab, so that is the place to look.")
+        #expect(answer.proposal == .goTo(target: ProposedTarget(group: "Shop", tab: 1, title: "Fix flaky checkout test")))
+        #expect(!answer.unreadableProposal)
     }
 
-    @Test func theChatFieldSharesTheListsKeys() {
-        #expect(route(kVK_DownArrow, focus: .overseer, empty: false) == .list)
-        #expect(route(kVK_ANSI_R, "r", .command, focus: .overseer, empty: false) == .list)
-        #expect(route(kVK_ANSI_3, "3", .command, focus: .overseer) == .list)
-        #expect(route(kVK_ANSI_F, "f", .command, focus: .overseer) == .focusFilter)
-        #expect(route(kVK_Return, focus: .overseer, empty: true) == .list)  // jumps to the session
-        #expect(route(kVK_Return, focus: .overseer, empty: false) == .field)  // asks the overseer
-        #expect(route(kVK_LeftArrow, focus: .overseer, empty: false) == .field)
-        #expect(route(kVK_ANSI_A, "a", focus: .overseer) == .field)
+    @Test func readsOtherSpellingsAndATargetsList() {
+        let answer = OverseerAnswer.parse(#"Look there. {"action":"go_to","targets":[{"title":"Scout Rashford"}]}"#)
+        #expect(answer.proposal == .goTo(target: ProposedTarget(title: "Scout Rashford")))
     }
 
-    @Test func onlyPlainReturnOnTheCardSends() {
-        #expect(route(kVK_Return, focus: .proposal) == .confirmCard)
-        #expect(route(kVK_Return, "\r", .shift, focus: .proposal) == .field)
-        #expect(route(kVK_DownArrow, focus: .proposal) == .field)
-        #expect(route(kVK_Return, focus: .reply(sessionId: "a")) == .field)
-        #expect(route(kVK_Return, focus: .search) == .list)
+    @Test(arguments: [
+        "```lotc\n{\"action\": \"goto\"}\n```",  // nowhere to go
+        "```lotc\n{\"action\": \"goto\", \"target\": {}}\n```",
+        "```lotc\n{\"action\": \"goto\", \"target\": \"Shop\"}\n```",  // not a session
+        "```lotc\n{\"action\": \"goto\", \"targets\": []}\n```",
+        "```lotc\n{\"action\": \"goto\", \"target\": {\"tab\": \n```",  // cut off
+    ])
+    func junkGoesNowhere(_ block: String) {
+        let answer = OverseerAnswer.parse("Over there.\n" + block)
+        #expect(answer.text == "Over there.")
+        #expect(answer.proposal == nil)
+        #expect(answer.unreadableProposal)
+    }
+
+    @Test func aGoToCardNamesOneSessionOrAsksWhich() {
+        let one = RoutingCard.make(.goTo(target: ProposedTarget(group: "Shop", tab: 1)), places: places)
+        #expect(one.kind == .goTo([places[3]], missing: []))
+        #expect(one.canSend && one.isGoTo)
+        #expect(one.headline == "Go to Shop, tab 1, Fix flaky checkout test")
+
+        let several = RoutingCard.make(.goTo(target: ProposedTarget(title: "Scout")), places: places)
+        #expect(several.kind == .goTo([places[1], places[2]], missing: []))
+        #expect(!several.canSend)
+
+        let none = RoutingCard.make(.goTo(target: ProposedTarget(title: "Sign Bellingham")), places: places)
+        #expect(none.kind == .goTo([], missing: ["\"Sign Bellingham\""]))
+        #expect(!none.canSend)
+        #expect(none.headline == "Could not find that session")
+    }
+}
+
+private let goToShop = """
+    The diff is in its tab.
+    ```lotc
+    {"action": "goto", "target": {"group": "Shop", "tab": 1, "title": "Fix flaky checkout test"}}
+    ```
+    """
+
+@MainActor
+struct GoToGateTests {
+    private func ask(_ chat: OverseerChat, _ host: FakeHost, _ text: String) async {
+        chat.draft = text
+        chat.submit(to: host)
+        await chat.settle()
+    }
+
+    @Test func goesNowhereUntilGoIsPressedAndNeverOnAStrayReturn() async throws {
+        let host = FakeHost()
+        let chat = OverseerChat(runner: FakeRunner([.success(goToShop)]), file: nil, settingsFile: nil)
+        await ask(chat, host, "take me to the checkout one")
+        #expect(try #require(chat.card).kind == .goTo([places[3]], missing: []))
+        #expect(host.wentTo.isEmpty)
+
+        await chat.confirm(using: host, fromKeyboard: true)  // a Return already on its way
+        #expect(host.wentTo.isEmpty)
+        chat.card?.shownAt = .distantPast
+        chat.windowShown()  // hidden and shown again: read it again first
+        await chat.confirm(using: host, fromKeyboard: true)
+        #expect(host.wentTo.isEmpty)
+
+        chat.card?.shownAt = .distantPast
+        await chat.confirm(using: host, fromKeyboard: true)
+        #expect(host.wentTo == ["d"])
+        #expect(host.sent.isEmpty && host.started.isEmpty)
+        #expect(chat.card == nil)
+        #expect(chat.conversation.messages.last?.text == "Went to Shop, tab 1 (Fix flaky checkout test).")
+    }
+
+    @Test func cancelStaysHere() async {
+        let host = FakeHost()
+        let chat = OverseerChat(runner: FakeRunner([.success(goToShop)]), file: nil, settingsFile: nil)
+        await ask(chat, host, "take me to the checkout one")
+        chat.cancelCard()
+        await chat.confirm(using: host)
+        #expect(host.wentTo.isEmpty)
+        #expect(chat.conversation.messages.last?.text == "Stayed here.")
+    }
+
+    @Test func whichOneGoesOnlyOnceOneIsPickedAndGoIsPressed() async {
+        let host = FakeHost()
+        let reply = "Either scout.\n```lotc\n{\"action\":\"goto\",\"target\":{\"title\":\"Scout\"}}\n```"
+        let chat = OverseerChat(runner: FakeRunner([.success(reply)]), file: nil, settingsFile: nil)
+        await ask(chat, host, "take me to the scout")
+        await chat.confirm(using: host)
+        #expect(host.wentTo.isEmpty)
+        chat.choose(places[2])
+        #expect(host.wentTo.isEmpty)
+        await chat.confirm(using: host)
+        #expect(host.wentTo == ["c"])
+    }
+
+    @Test func aSendOrANewSessionNeverMovesATab() async {
+        let host = FakeHost()
+        let new = "A new one.\n```lotc\n{\"action\":\"new\",\"group\":\"Shop\",\"cwd\":\"/\",\"prompt\":\"add a size guide\"}\n```"
+        let chat = OverseerChat(runner: FakeRunner([.success(sendToShop), .success(new)]), file: nil, settingsFile: nil)
+        await ask(chat, host, "tell the checkout one to rebase")
+        #expect(host.sent.isEmpty)
+        await chat.confirm(using: host)
+        await ask(chat, host, "start a size guide")
+        #expect(host.started.isEmpty)
+        await chat.confirm(using: host)
+        #expect(host.sent.count == 1 && host.started.count == 1)
+        #expect(host.wentTo.isEmpty)
+    }
+}
+
+@MainActor
+struct OverseerInstructionsTests {
+    private func scratch() -> URL {
+        FileManager.default.temporaryDirectory.appendingPathComponent("lotc-overseer-\(UUID().uuidString).json")
+    }
+
+    @Test func aConversationFromBeforeTheseInstructionsStartsAfreshCarryingTheChat() async throws {
+        let file = scratch()
+        defer { try? FileManager.default.removeItem(at: file) }
+        // As an older version saved it: a Claude Code session id and no record of its instructions.
+        OverseerConversation(sessionId: "old-session", messages: [
+            OverseerMessage(role: .user, text: "who is waiting?"),
+            OverseerMessage(role: .overseer, text: "Two are waiting: [Scout Rashford](session:United/2) and the kit."),
+        ]).save(to: file)
+        let saved = try String(contentsOf: file, encoding: .utf8)
+        #expect(!saved.contains("instructions"))
+
+        let runner = FakeRunner([.success("Still two."), .success("One now.")])
+        let chat = OverseerChat(runner: runner, file: file, settingsFile: nil)
+        chat.draft = "and now?"
+        chat.submit(to: FakeHost())
+        await chat.settle()
+
+        let first = runner.requests[0]
+        #expect(!first.resume && first.sessionId != "old-session")
+        #expect(first.message.hasPrefix("<earlier-conversation>"))
+        #expect(first.message.contains("Developer: who is waiting?\nYou: Two are waiting:"))
+        #expect(first.message.hasSuffix("\n\nand now?"))
+        #expect(chat.conversation.messages.map(\.role) == [.user, .overseer, .note, .user, .overseer])
+        #expect(chat.conversation.instructions == OverseerPrompt.fingerprint)
+
+        // Picked up again after a restart, it now carries on as usual.
+        let restarted = OverseerChat(runner: runner, file: file, settingsFile: nil)
+        restarted.draft = "and now?"
+        restarted.submit(to: FakeHost())
+        await restarted.settle()
+        #expect(runner.requests[1].resume && runner.requests[1].sessionId == first.sessionId)
+        #expect(!runner.requests[1].message.contains("<earlier-conversation>"))
+    }
+
+    @Test func aConversationThatHasGoneAlsoCarriesTheChat() async {
+        let runner = FakeRunner([.success("Hello."), .failure(.conversationGone), .success("Hello again.")])
+        let chat = OverseerChat(runner: runner, file: nil, settingsFile: nil)
+        for text in ["hi", "hi again"] {
+            chat.draft = text
+            chat.submit(to: FakeHost())
+            await chat.settle()
+        }
+        #expect(!runner.requests[0].message.contains("<earlier-conversation>"))
+        #expect(!runner.requests[1].message.contains("<earlier-conversation>"))  // the resume has it already
+        #expect(runner.requests[2].message.contains("Developer: hi\nYou: Hello."))
+    }
+
+    @Test func theFingerprintFollowsTheInstructions() {
+        #expect(OverseerPrompt.fingerprint.count == 16)
+        #expect(OverseerPrompt.system.contains(#""action": "goto""#))
+    }
+
+    @Test func anOlderFileStillLoads() throws {
+        let json = #"{"sessionId": "x", "messages": [{"id": "6F9619FF-8B86-D011-B42D-00CF4FC964FF", "role": "user", "text": "hi", "at": 0}]}"#
+        let conversation = try JSONDecoder().decode(OverseerConversation.self, from: Data(json.utf8))
+        #expect(conversation.sessionId == "x" && conversation.instructions == nil && conversation.messages.count == 1)
     }
 }

@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// What became of the last prompt sent from a field in the panel, shown under that field.
+/// What became of the last prompt sent from a field in the window, shown under that field.
 struct SendNote: Equatable {
     enum Outcome { case sending, sent, failed }
     let outcome: Outcome

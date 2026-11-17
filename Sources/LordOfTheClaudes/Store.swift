@@ -14,24 +14,32 @@ struct Record: Codable {
     var position: Int?
     /// Last time its tab was the one in front of the user.
     var seenAt: Date?
-    /// Closed from the panel, so not to be reopened automatically.
+    /// Closed from the app, so not to be reopened automatically.
     var closedByUser: Bool?
     /// The name the user gave the group (Ghostty window) this session is in.
     var group: String?
     /// This session directs the others in its window.
     var isLord: Bool?
-    /// The user folded its group away in the panel.
+    /// The user folded its window's group away in the sidebar.
     var collapsed: Bool?
     /// The observer's latest summary of the session.
     var digest: Digest?
     /// Its digests as the work moved on, oldest first, the latest last. See `Digest.history`.
     var digestHistory: [Digest]?
+    /// The topic it is filed under in the sidebar; nil until the observer or the user gives it one.
+    var topic: String?
+    /// The user set the topic by hand, so the observer leaves it alone.
+    var topicPinned: Bool?
 }
 
 struct SavedState: Codable {
     /// Last time we polled while Ghostty was up. Sessions seen within `grace` of this were open when Ghostty went away.
     var heartbeat = Date.distantPast
     var records: [Record] = []
+    /// Renamed topics, old name lowercased to new, so the observer's old label lands in the new group.
+    var topicAliases: [String: String]?
+    /// Topic groups folded away in the sidebar, lowercased.
+    var collapsedTopics: [String]?
 }
 
 struct Row: Identifiable {
@@ -55,7 +63,12 @@ struct Row: Identifiable {
     var digest: Digest? = nil
     /// Oldest first; the last is `digest`.
     var digestHistory: [Digest] = []
+    /// The topic given by the observer or the user; see `topicName`.
+    var topic: String? = nil
+    var topicPinned = false
 
+    /// The topic group it shows in: its topic, else its project folder.
+    var topicName: String { topic ?? Topics.folder(of: cwd) }
     var isLive: Bool { status != nil }
     var isStale: Bool { isLive && Date().timeIntervalSince(lastInteraction) > Self.staleAfter }
 }
@@ -96,8 +109,6 @@ final class Store: ObservableObject {
     private var poweringOff = false
     private let data = ClaudeData()
     private var observer: Observer?
-    /// Only the real store makes one: freeing a source never resumed traps, and a demo store is freed.
-    private var toggleSignal: DispatchSourceSignal?
 
     private let stateURL: URL = {
         let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -108,7 +119,7 @@ final class Store: ObservableObject {
 
     /// Made-up sessions for README screenshots: reads and writes nothing, and never polls or types into Ghostty.
     /// `groupNames` names the made-up windows, by window id; `collapsed` lists the folded ones.
-    init(demoRows: [Row], groupNames: [String: String] = [:], collapsed: Set<String> = []) {
+    init(demoRows: [Row], groupNames: [String: String] = [:], collapsed: Set<String> = [], collapsedTopics: [String] = []) {
         autoRestore = true
         launchAtLogin = false
         summarise = true
@@ -126,8 +137,10 @@ final class Store: ObservableObject {
             Record(id: row.id, cwd: row.cwd, title: row.title, lastSeen: Date(), lastInteraction: row.lastInteraction,
                    group: row.windowId.flatMap { groupNames[$0] }, isLord: row.isLord ? true : nil,
                    collapsed: row.windowId.map(collapsed.contains) == true ? true : nil,
-                   digest: row.digest, digestHistory: row.digestHistory)
+                   digest: row.digest, digestHistory: row.digestHistory,
+                   topic: row.topic, topicPinned: row.topicPinned ? true : nil)
         }
+        state.collapsedTopics = collapsedTopics.map { $0.lowercased() }
     }
 
     init() {
@@ -146,21 +159,14 @@ final class Store: ObservableObject {
             state = decoded
         }
 
-        // Lets a script open the panel: `pkill -USR1 -x LordOfTheClaudes`.
-        signal(SIGUSR1, SIG_IGN)
-        let toggleSignal = DispatchSource.makeSignalSource(signal: SIGUSR1, queue: .main)
-        toggleSignal.setEventHandler { Panel.toggle() }
-        toggleSignal.resume()
-        self.toggleSignal = toggleSignal
-
         NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.willPowerOffNotification, object: nil, queue: .main
         ) { [weak self] _ in
             Task { @MainActor in self?.freezeForShutdown() }
         }
 
-        HotKey.register { Panel.toggle() }
-        observer = Observer(summariser: ClaudeSummariser(), read: { Transcript.excerpt(of: $0) }) { [weak self] id, digest in
+        observer = Observer(summariser: ClaudeSummariser(), read: { Transcript.excerpt(of: $0) },
+                            topics: { [weak self] id in self?.topicContext(for: id) ?? .none }) { [weak self] id, digest in
             self?.record(digest, for: id)
         }
         LotcServer.start(store: self)
@@ -291,7 +297,8 @@ final class Store: ObservableObject {
                     prompts: sessionHistory?.prompts ?? [],
                     ticket: Tickets.link(title: record.title) ?? sessionHistory?.link,
                     windowId: terminal?.windowId, tab: tab, isLord: session != nil && record.isLord == true,
-                    digest: record.digest, digestHistory: record.digestHistory ?? []
+                    digest: record.digest, digestHistory: record.digestHistory ?? [],
+                    topic: record.topic, topicPinned: record.topicPinned == true
                 )
             }
             .sorted { ($0.needsYou ? 1 : 0, $0.lastInteraction) > ($1.needsYou ? 1 : 0, $1.lastInteraction) }
@@ -312,7 +319,7 @@ final class Store: ObservableObject {
         let id: String  // the Ghostty window id
         let name: String
         let rows: [Row]
-        /// The user folded it away in the panel.
+        /// The user folded it away in the sidebar.
         let collapsed: Bool
     }
 
@@ -349,7 +356,7 @@ final class Store: ObservableObject {
         records.filter { $0.collapsed == true }.count * 2 > records.count
     }
 
-    /// Folds a group away in the panel, or opens it again. Remembered with its sessions.
+    /// Folds a window's group away in the sidebar, or opens it again. Remembered with its sessions.
     func setCollapsed(_ windowId: String, _ collapsed: Bool) {
         let members = Set(rows.filter { $0.windowId == windowId }.map(\.id))
         for index in state.records.indices where members.contains(state.records[index].id) {
@@ -388,7 +395,7 @@ final class Store: ObservableObject {
 
     // MARK: Observer
 
-    /// Claude has stopped in a session: the observer sums it up. Only sessions the panel tracks, so a
+    /// Claude has stopped in a session: the observer sums it up. Only sessions the app tracks, so a
     /// `claude -p` run by some script costs nothing.
     func observe(_ event: StopEvent) {
         guard summarise, let observer else { return }
@@ -404,12 +411,94 @@ final class Store: ObservableObject {
         }
     }
 
-    private func record(_ digest: Digest, for sessionId: String) {
+    func record(_ digest: Digest, for sessionId: String) {
         guard let index = state.records.firstIndex(where: { $0.id == sessionId }) else { return }
+        let record = state.records[index]
+        state.records[index].topic = Topics.next(
+            current: record.topic, pinned: record.topicPinned == true, proposed: digest.topic,
+            previous: record.digest?.topic, inUse: topicsInUse, aliases: state.topicAliases ?? [:])
         state.records[index].digest = digest
         state.records[index].digestHistory = Digest.history(state.records[index].digestHistory ?? [], adding: digest)
         save()
-        rebuildRows()
+        if isDemo { refreshRowsFromRecords() } else { rebuildRows() }
+    }
+
+    // MARK: Topics
+
+    /// Every topic given to a session, open or recently closed, commonest first.
+    var topicsInUse: [String] { Topics.ranked(state.records.compactMap(\.topic)) }
+
+    /// What the observer is told when it sums this session up.
+    func topicContext(for sessionId: String) -> TopicContext {
+        TopicContext(current: state.records.first { $0.id == sessionId }?.topic, inUse: topicsInUse)
+    }
+
+    var collapsedTopics: Set<String> { Set(state.collapsedTopics ?? []) }
+
+    func setTopicCollapsed(_ topic: String, _ collapsed: Bool) {
+        var folded = collapsedTopics
+        if collapsed { folded.insert(topic.lowercased()) } else { folded.remove(topic.lowercased()) }
+        state.collapsedTopics = folded.isEmpty ? nil : folded.sorted()
+        save()
+        objectWillChange.send()
+    }
+
+    /// Renames a topic group for every session in it, open or closed, and pins it there. The observer's old
+    /// label now means the new name. Renaming to another topic's name merges the two; empty hands the
+    /// sessions back to the observer.
+    func renameTopic(_ old: String, to new: String) {
+        let new = Topics.clean(new)
+        var aliases = state.topicAliases ?? [:]
+        for index in state.records.indices {
+            let record = state.records[index]
+            guard Topics.same(record.topic ?? Topics.folder(of: record.cwd), old) else { continue }
+            state.records[index].topic = new
+            state.records[index].topicPinned = new == nil ? nil : true
+        }
+        if let new {
+            aliases[new.lowercased()] = nil
+            if !Topics.same(old, new) { aliases[old.lowercased()] = new }
+            if collapsedTopics.contains(old.lowercased()) {
+                setTopicCollapsed(old, false)
+                setTopicCollapsed(new, true)
+            }
+        }
+        state.topicAliases = aliases.isEmpty ? nil : aliases
+        topicsChanged()
+    }
+
+    /// Files one session under a topic by hand. The observer never moves it again.
+    func move(_ sessionId: String, toTopic topic: String) {
+        guard let topic = Topics.clean(topic), let index = state.records.firstIndex(where: { $0.id == sessionId }) else { return }
+        state.records[index].topic = topicsInUse.first { Topics.same($0, topic) } ?? topic
+        state.records[index].topicPinned = true
+        topicsChanged()
+    }
+
+    /// Lets the observer choose the session's topic again at its next digest.
+    func unpinTopic(_ sessionId: String) {
+        guard let index = state.records.firstIndex(where: { $0.id == sessionId }) else { return }
+        state.records[index].topicPinned = nil
+        topicsChanged()
+    }
+
+    private func topicsChanged() {
+        save()
+        refreshRowsFromRecords()
+    }
+
+    /// The rows with their saved digests and topics, without a poll: what a demo store can do.
+    private func refreshRowsFromRecords() {
+        let byId = Dictionary(state.records.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        rows = rows.map { row in
+            guard let record = byId[row.id] else { return row }
+            var row = row
+            row.digest = record.digest
+            row.digestHistory = record.digestHistory ?? []
+            row.topic = record.topic
+            row.topicPinned = record.topicPinned == true
+            return row
+        }
     }
 
     /// Every running session's digest, window by window, as plain text for a model: `lotc digest --all`.
@@ -443,6 +532,14 @@ final class Store: ObservableObject {
         return sent
     }
 
+    /// Sends one prompt to each of these sessions. Returns how many took it.
+    @discardableResult
+    func broadcast(_ text: String, toSessions ids: [String]) async -> Int {
+        var sent = 0
+        for id in ids where await send(text, toSession: id) { sent += 1 }
+        return sent
+    }
+
     private func save() {
         guard !isDemo, !Sandbox.isOn else { return }
         let encoder = JSONEncoder()
@@ -472,6 +569,13 @@ final class Store: ObservableObject {
         rows.removeAll { $0.id == row.id }
         pending.removeAll { $0 == row.id }
         save()
+    }
+
+    /// Brings a running session's tab to the front. False when it is closed or its tab cannot be found.
+    func goTo(session sessionId: String) -> Bool {
+        guard let row = rows.first(where: { $0.id == sessionId && $0.isLive }) else { return false }
+        focus(row)
+        return tabs[row.id] != nil
     }
 
     func focus(_ row: Row) {
@@ -588,7 +692,7 @@ final class Store: ObservableObject {
     }
 }
 
-/// Window names as the panel shows them.
+/// Window names as the sidebar shows them.
 enum GroupNames {
     /// One name per group, in window order. A name the user gave stands as given; a usual (directory)
     /// name already taken gets a number: "shop", "shop 2".

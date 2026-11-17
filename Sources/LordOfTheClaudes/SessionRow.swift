@@ -30,215 +30,139 @@ struct AgeBadge: View {
     }
 }
 
+/// One session in the sidebar, in two lines. A click shows it in the main area; a double click goes to its tab.
 struct SessionRow: View {
     let row: Row
-    let selected: Bool
-    let expanded: Bool
-    let activate: () -> Void
-    let toggleExpanded: () -> Void
-    /// Closes a running session, or forgets a closed one.
-    let remove: () -> Void
-    /// Nil when it cannot be made lord: closed, in no window, or lord already.
-    let makeLord: (() -> Void)?
-    @Binding var replyText: String
-    let replyNote: SendNote?
-    let sendReply: () -> Void
-    /// The digest's earlier steps are on show.
-    @Binding var historyOpen: Bool
-    var focus: FocusState<PanelField?>.Binding
+    /// Its detail is in the main area.
+    let showing: Bool
+    /// The arrows are on it.
+    let highlighted: Bool
+    /// Its window and tab, when the group heading does not say: "Shop, tab 2".
+    let place: String?
+    let model: WindowModel
     @State private var hovering = false
 
-    private var shortCwd: String {
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        return row.cwd.hasPrefix(home) ? "~" + row.cwd.dropFirst(home.count) : row.cwd
-    }
-
-    private func oneLine(_ text: String) -> String {
-        text.split(whereSeparator: \.isNewline).first.map(String.init) ?? text
-    }
-
     private var subtitle: String {
+        let doing = SessionText.doing(row)
         if row.needsYou, let since = row.statusSince { return "Finished \(shortAge(since)) ago · \(doing)" }
         if row.status == "busy" { return "Working · \(doing)" }
         return doing
     }
 
-    /// What it is blocked on, else where it has got to, else the last prompt. A prompt newer than the
-    /// digest is the newer news: the digest is from before Claude took it up.
-    private var doing: String {
-        let prompt = row.prompts.last
-        if let digest = row.digest, prompt.map({ $0.date <= digest.at }) ?? true {
-            return digest.blockedOn.map { "Needs you: " + $0 } ?? digest.state
-        }
-        return prompt.map { oneLine($0.text) } ?? shortCwd
-    }
-
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            // Only the summary jumps to the tab and has the menu: the details hold selectable text and the reply field.
-            summary
-                .contentShape(Rectangle())
-                .onTapGesture { if row.isLive { activate() } }
-                .contextMenu {
-                    if let makeLord { Button("Make lord of this group", action: makeLord) }
-                }
-            if expanded { details }
-        }
-        .background(selected ? Color.accentColor.opacity(0.25) : hovering ? Color.primary.opacity(0.08) : .clear)
-        .overlay(alignment: .leading) {
-            if row.needsYou { Rectangle().fill(Color.waiting).frame(width: 3) }
-        }
-        .contentShape(Rectangle())
-        .onHover { hovering = $0 }
-        .id(row.id)
-    }
-
-    private var summary: some View {
         HStack(spacing: 10) {
             AgeBadge(date: row.lastInteraction, live: row.isLive)
                 .help("Last prompt " + row.lastInteraction.formatted(date: .abbreviated, time: .shortened))
             VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: 5) {
-                    if row.needsYou {
-                        Image(systemName: "bell.fill").font(.caption).foregroundStyle(Color.waiting)
-                            .accessibilityLabel("Waiting for you")
-                    }
-                    if row.isLord {
-                        Image(systemName: "crown.fill").font(.caption).foregroundStyle(Color.lord)
-                            .help("Lord of this group")
-                            .accessibilityLabel("Lord of this group")
-                    }
+                    SessionMarks(row: row)
                     Text(row.title).lineLimit(1)
+                    Spacer(minLength: 4)
+                    if let place {
+                        Text(place).font(.caption).foregroundStyle(.secondary).lineLimit(1).layoutPriority(-1)
+                    }
                 }
                 Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1)
             }
-            .help(row.isLive ? "Return jumps to its tab. ⌘R replies without leaving the panel." : "Return reopens it.")
-            Spacer(minLength: 8)
             if !row.isLive {
-                Button("Reopen", action: activate).controlSize(.small)
+                Button("Reopen") { model.goTo(row) }.controlSize(.small)
             }
-            if hovering {
-                Button(action: remove) { Image(systemName: "xmark") }
-                    .help(row.isLive ? "Close this session and its tab (it stays under Recently closed)" : "Forget this session")
-                    .accessibilityLabel(row.isLive ? "Close this session and its tab" : "Forget this session")
-            }
-            if let ticket = row.ticket {
-                Button { NSWorkspace.shared.open(ticket) } label: { Image(systemName: "ticket") }
-                    .help(ticket.absoluteString)
-                    .accessibilityLabel("Open the ticket")
-            }
-            Button(action: toggleExpanded) {
-                Image(systemName: expanded ? "chevron.down" : "chevron.right").frame(width: 12)
-            }
-            .help(expanded ? "Hide recent prompts" : "Show recent prompts and reply")
-            .accessibilityLabel(expanded ? "Hide recent prompts" : "Show recent prompts and reply")
         }
-        .buttonStyle(.borderless)
         .padding(.horizontal, 12).padding(.vertical, 5)
-    }
-
-    private var details: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            Text(shortCwd + (row.status.map { " · \($0)" } ?? " · closed"))
-                .font(.caption).foregroundStyle(.secondary)
-            if let digest = row.digest {
-                DigestView(digest: digest, earlier: row.digestHistory.filter { $0 != digest }.reversed(),
-                           historyOpen: $historyOpen)
-            }
-            if row.isLive { reply }
-            if row.prompts.isEmpty {
-                Text("No prompts in Claude's history for this session.").font(.caption).foregroundStyle(.secondary)
-            }
-            ForEach(Array(row.prompts.enumerated().reversed()), id: \.offset) { _, prompt in
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(shortAge(prompt.date))
-                        .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                        .frame(width: 28, alignment: .trailing)
-                    Text(prompt.text.trimmingCharacters(in: .whitespacesAndNewlines))
-                        .font(.callout).lineLimit(5)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .textSelection(.enabled)
-                }
-            }
+        .background(showing ? Color.accentColor.opacity(0.25) : highlighted ? Color.accentColor.opacity(0.14)
+                    : hovering ? Color.primary.opacity(0.06) : .clear)
+        .overlay(alignment: .leading) {
+            if row.needsYou { Rectangle().fill(Color.waiting).frame(width: 3) }
         }
-        .padding(.leading, 56).padding(.trailing, 12).padding(.bottom, 8)
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    /// Types a prompt into the session's tab without leaving the panel.
-    private var reply: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            TextField("Send a prompt", text: $replyText)
-                .textFieldStyle(.roundedBorder)
-                .focused(focus, equals: .reply(sessionId: row.id))
-                .onSubmit(sendReply)
-                .help("Return types it into the session's tab. Esc leaves the field.")
-            if let replyNote { SendNoteView(note: replyNote) }
-        }
-        .padding(.vertical, 2)
+        .contentShape(Rectangle())
+        .onTapGesture { model.show(row) }
+        .simultaneousGesture(TapGesture(count: 2).onEnded { model.goTo(row) })
+        .onHover { hovering = $0 }
+        .contextMenu { SessionMenu(row: row, model: model) }
+        .help(row.isLive ? "Click for its detail. Double-click or Return goes to its tab." : "Click for its detail. Return reopens it.")
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(showing ? [.isButton, .isSelected] : .isButton)
+        .accessibilityAction(named: row.isLive ? "Go to tab" : "Reopen") { model.goTo(row) }
+        .id(row.id)
     }
 }
 
-/// The observer's three lines on a session, and the steps before them behind a disclosure.
-struct DigestView: View {
-    let digest: Digest
-    /// Newest first.
-    let earlier: [Digest]
-    @Binding var historyOpen: Bool
+/// The bell and the crown in front of a session's title.
+struct SessionMarks: View {
+    let row: Row
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 8, verticalSpacing: 3) {
-                line("Goal", digest.goal)
-                line("Now", digest.state)
-                if let blockedOn = digest.blockedOn { line("Blocked on", blockedOn, labelColour: .waiting) }
-            }
-            Text("Summarised \(shortAge(digest.at) == "now" ? "just now" : shortAge(digest.at) + " ago")")
-                .font(.caption).foregroundStyle(.secondary)
-            if !earlier.isEmpty { history }
+        if row.needsYou {
+            Image(systemName: "bell.fill").font(.caption).foregroundStyle(Color.waiting)
+                .accessibilityLabel("Waiting for you")
         }
-        .padding(.vertical, 2)
+        if row.isLord {
+            Image(systemName: "crown.fill").font(.caption).foregroundStyle(Color.lord)
+                .help("Lord of its window")
+                .accessibilityLabel("Lord of its window")
+        }
+    }
+}
+
+/// A session's right-click menu, in the sidebar and on its detail.
+struct SessionMenu: View {
+    let row: Row
+    let model: WindowModel
+
+    var body: some View {
+        Button(row.isLive ? "Go to tab" : "Reopen") { model.goTo(row) }
+        Button("Show details") { model.show(row) }
+        Menu("Move to topic") { TopicMenu(row: row, model: model) }
+        if row.isLive && row.windowId != nil && !row.isLord {
+            Button("Make lord of its window") { model.store.makeLord(row.id) }
+        }
+        Divider()
+        Button(row.isLive ? "Close session and tab" : "Forget") { model.close(row) }
+    }
+}
+
+/// The topics a session can move to, a new one, and handing it back to the observer.
+struct TopicMenu: View {
+    let row: Row
+    let model: WindowModel
+
+    var body: some View {
+        ForEach(model.topicChoices, id: \.self) { topic in
+            Button(topic) { model.move(row, toTopic: topic) }
+                .disabled(Topics.same(topic, row.topicName))
+        }
+        Divider()
+        Button("New topic…") { model.namingTopicFor = row.id }
+        if row.topicPinned {
+            Button("Let the observer choose") { model.store.unpinTopic(row.id) }
+        }
+    }
+}
+
+/// How a session is described in a line.
+enum SessionText {
+    /// What it is blocked on, else where it has got to, else the last prompt. A prompt newer than the
+    /// digest is the newer news: the digest is from before Claude took it up.
+    static func doing(_ row: Row) -> String {
+        let prompt = row.prompts.last
+        if let digest = row.digest, prompt.map({ $0.date <= digest.at }) ?? true {
+            return digest.blockedOn.map { "Needs you: " + $0 } ?? digest.state
+        }
+        return prompt.map { oneLine($0.text) } ?? shortPath(row.cwd)
     }
 
-    private func line(_ label: String, _ text: String, labelColour: Color? = nil) -> some View {
-        GridRow {
-            Text(label)
-                .font(.caption.weight(.medium))
-                .foregroundStyle(labelColour.map(AnyShapeStyle.init) ?? AnyShapeStyle(.secondary))
-                .gridColumnAlignment(.trailing)
-            Text(text)
-                .font(.callout)
-                .fixedSize(horizontal: false, vertical: true)
-                .textSelection(.enabled)
-        }
-        .accessibilityElement(children: .combine)
+    static func oneLine(_ text: String) -> String {
+        text.split(whereSeparator: \.isNewline).first.map(String.init) ?? text
     }
 
-    private var history: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Button { historyOpen.toggle() } label: {
-                HStack(spacing: 4) {
-                    Image(systemName: historyOpen ? "chevron.down" : "chevron.right").frame(width: 10)
-                    Text("Earlier (\(earlier.count))")
-                }
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            }
-            .buttonStyle(.borderless)
-            .help(historyOpen ? "Hide what it did before" : "Show what it did before")
-            .accessibilityLabel(historyOpen ? "Hide earlier steps" : "Show \(earlier.count) earlier steps")
-            if historyOpen {
-                ForEach(Array(earlier.enumerated()), id: \.offset) { _, step in
-                    HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        Text(shortAge(step.at))
-                            .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                            .frame(width: 28, alignment: .trailing)
-                        Text(step.state).font(.caption).fixedSize(horizontal: false, vertical: true)
-                            .textSelection(.enabled)
-                    }
-                    .accessibilityElement(children: .combine)
-                }
-            }
-        }
+    static func shortPath(_ path: String) -> String {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        return path.hasPrefix(home) ? "~" + path.dropFirst(home.count) : path
+    }
+
+    /// "Shop, tab 2", "Shop" or "no tab".
+    static func place(_ row: Row, windowNames: [String: String]) -> String {
+        guard let windowId = row.windowId, let name = windowNames[windowId] else { return "no tab" }
+        return row.tab.map { "\(name), tab \($0)" } ?? name
     }
 }

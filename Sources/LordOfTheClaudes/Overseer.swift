@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import SwiftUI
 
@@ -66,6 +67,8 @@ struct OverseerConversation: Codable, Equatable {
     /// Nil until the first answer, and again after "New chat".
     var sessionId: String?
     var messages: [OverseerMessage] = []
+    /// `OverseerPrompt.fingerprint` of the instructions Claude Code recorded for `sessionId`. Nil in files from before it was kept.
+    var instructions: String?
 
     mutating func append(_ message: OverseerMessage, cap: Int = Self.cap) {
         messages.append(message)
@@ -88,13 +91,14 @@ struct OverseerConversation: Codable, Equatable {
 /// What the overseer is told: who it is once, then the current briefing with every message.
 enum OverseerPrompt {
     static let system = """
-        You are the overseer in Lord of the Claudes, a macOS menu bar app that watches the Claude Code \
-        sessions one developer has open in Ghostty terminal tabs. The developer talks to you in a small chat \
-        box above the list of sessions.
+        You are the overseer in Lord of the Claudes, a macOS app that watches the Claude Code sessions one \
+        developer has open in Ghostty terminal tabs. The developer talks to you in the app's main window, \
+        beside the list of sessions.
 
         Each message starts with a briefing in <briefing> tags: every open session by group (a Ghostty window) \
-        and tab number, with its title, directory and status, and a digest of its goal, its state and what it \
-        is blocked on when there is one. The newest briefing is the truth; older ones are out of date. You have \
+        and tab number, with its title, directory, topic and status, and a digest of its goal, its state and \
+        what it is blocked on when there is one. A topic gathers sessions on one subject across windows; use \
+        it when the developer asks about a subject. The newest briefing is the truth; older ones are out of date. You have \
         no tools and cannot read transcripts, files or the web. Answer from the briefing and this conversation \
         only, and say so when they do not tell you.
 
@@ -125,17 +129,56 @@ enum OverseerPrompt {
         {"action": "choose", "question": "Which checkout session?", "candidates": [{"group": "Shop", "tab": 2, "title": "..."}, {"group": "Shop", "tab": 4, "title": "..."}], "prompt": "..."}
         ```
         - At most one block per reply, and only when proposing. Nothing is sent until the developer confirms \
-        it in the panel, so never say that you have sent anything.
+        it in the window, so never say that you have sent anything.
+
+        Taking the developer to a session:
+        Most questions are answered from the briefing; answer those and propose nothing. Only when the answer \
+        really is that the developer needs to look at a tab themselves (to review a diff or a page, to answer \
+        something the digest does not show, or because they asked to be taken there), say why in one short \
+        sentence and end with:
+        ```lotc
+        {"action": "goto", "target": {"group": "Shop", "tab": 2, "title": "Fix flaky checkout test"}}
+        ```
+        - One session. When two could be meant, put both in "targets" instead of "target" and the app asks which.
+        - The app shows a Go button and moves nothing until the developer presses it, so never say you have taken them there.
         """
 
-    /// The developer's words, after the briefing and anything done since the last answer.
-    static func message(_ text: String, briefing: String, since notes: [String], at date: Date = Date()) -> String {
-        var parts = ["<briefing at=\"\(date.formatted(date: .omitted, time: .shortened))\">\n\(briefing)\n</briefing>"]
+    /// Changes whenever `system` does. A saved conversation whose instructions differ starts afresh, as
+    /// Claude Code keeps the instructions a conversation began with (`--system-prompt-snapshot`).
+    static let fingerprint: String = SHA256.hash(data: Data(system.utf8)).prefix(8).map { String(format: "%02x", $0) }.joined()
+
+    /// How much of an earlier conversation goes with the first message of a fresh one.
+    static let carriedMessages = 20
+    static let carriedCharacters = 600
+
+    /// The developer's words, after the briefing and anything done since the last answer. A fresh Claude Code
+    /// conversation that follows an earlier one is given the end of it first, so the chat carries on.
+    static func message(_ text: String, briefing: String, since notes: [String], earlier: [OverseerMessage] = [],
+                        at date: Date = Date()) -> String {
+        var parts: [String] = []
+        if !earlier.isEmpty { parts.append(carried(earlier)) }
+        parts.append("<briefing at=\"\(date.formatted(date: .omitted, time: .shortened))\">\n\(briefing)\n</briefing>")
         if !notes.isEmpty {
             parts.append("<since-your-last-answer>\n" + notes.map { "- " + $0 }.joined(separator: "\n") + "\n</since-your-last-answer>")
         }
         parts.append(text)
         return parts.joined(separator: "\n\n")
+    }
+
+    private static func carried(_ messages: [OverseerMessage]) -> String {
+        let lines = messages.suffix(carriedMessages).map { message in
+            let who = switch message.role {
+            case .user: "Developer"
+            case .overseer: "You"
+            case .note: "App"
+            }
+            let text = message.text.count > carriedCharacters ? message.text.prefix(carriedCharacters) + "…" : Substring(message.text)
+            return "\(who): \(text)"
+        }
+        return (["<earlier-conversation>",
+                 "Your conversation with the developer so far, carried over from an earlier Claude Code session. "
+                     + "It is context only: the briefing below is newer."]
+                + lines + ["</earlier-conversation>"]).joined(separator: "\n")
     }
 }
 
@@ -149,10 +192,12 @@ protocol OverseerHost: AnyObject {
     func send(_ text: String, toSession sessionId: String) async -> Bool
     /// Opens a tab in the window (the front one when it has gone) and starts Claude Code with the prompt.
     func startSession(prompt: String, cwd: String, windowId: String?) async -> Ghostty.NewTab?
+    /// Brings a session's tab to the front. False when its tab cannot be found.
+    func goTo(session sessionId: String) -> Bool
 }
 
 extension Store: OverseerHost {
-    /// Every running session, in the panel's groups and tab order, then those under "Other".
+    /// Every running session, in window and tab order, then those under "Other".
     var overseerPlaces: [SessionPlace] {
         var places = groups.flatMap { group in
             group.rows.map { SessionPlace(rowId: $0.id, group: group.name, windowId: group.id, tab: $0.tab, title: $0.title, cwd: $0.cwd) }
@@ -170,7 +215,7 @@ extension Store: OverseerHost {
 }
 
 /// The chat with the overseer. Lives as long as the app, so a half-written message or a pending
-/// proposal survives the panel closing; the conversation itself survives restarts in overseer.json.
+/// proposal survives the window hiding; the conversation itself survives restarts in overseer.json.
 @MainActor
 final class OverseerChat: ObservableObject {
     static let shared = OverseerChat(runner: ClaudeCLI(), file: OverseerFiles.conversation, settingsFile: OverseerFiles.settings)
@@ -217,12 +262,32 @@ final class OverseerChat: ObservableObject {
         draft = ""
         showingNeeds = false
         if card != nil { cancelCard() }
+        let earlier = conversation.messages
+        // Claude Code would keep the old instructions on resume, so changed ones need a fresh conversation.
+        let outdated = conversation.sessionId != nil && conversation.instructions != OverseerPrompt.fingerprint
+        if outdated { append(.note, "The overseer has new instructions, so it starts a fresh conversation with this chat's recent messages.") }
         append(.user, text)
-        let message = OverseerPrompt.message(text, briefing: host.digestBriefing(), since: unsaid)
+        let turn = Turn(text: text, briefing: host.digestBriefing(), since: unsaid, earlier: earlier,
+                        resuming: outdated ? nil : conversation.sessionId)
         unsaid = []
         streaming = ""
         let current = generation
-        asking = Task { await ask(message, host: host, generation: current) }
+        asking = Task { await ask(turn, host: host, generation: current) }
+    }
+
+    /// One question as asked: the words, what went with them, and the conversation to carry on.
+    private struct Turn {
+        let text: String
+        let briefing: String
+        let since: [String]
+        /// The chat before this question, given to a fresh Claude Code conversation.
+        let earlier: [OverseerMessage]
+        /// Nil starts a fresh Claude Code conversation.
+        let resuming: String?
+
+        func message(fresh: Bool) -> String {
+            OverseerPrompt.message(text, briefing: briefing, since: since, earlier: fresh ? earlier : [])
+        }
     }
 
     /// Waits for the answer to the question in flight. For tests.
@@ -242,15 +307,16 @@ final class OverseerChat: ObservableObject {
         save()
     }
 
-    private func ask(_ message: String, host: OverseerHost, generation current: Int) async {
+    private func ask(_ question: Turn, host: OverseerHost, generation current: Int) async {
         let settings = settingsFile.map(OverseerSettings.load(from:)) ?? OverseerSettings()
         do {
             let reply: String
             do {
-                reply = try await turn(message, settings: settings, sessionId: conversation.sessionId)
+                reply = try await turn(question.message(fresh: question.resuming == nil), settings: settings,
+                                       sessionId: question.resuming)
             } catch OverseerFailure.conversationGone {
                 append(.note, "The earlier conversation had gone from Claude Code, so this starts a new one.")
-                reply = try await turn(message, settings: settings, sessionId: nil)
+                reply = try await turn(question.message(fresh: true), settings: settings, sessionId: nil)
             }
             let answer = OverseerAnswer.parse(reply)
             append(.overseer, answer.text.isEmpty && answer.proposal != nil ? "Here is what I would send." : answer.text)
@@ -286,6 +352,7 @@ final class OverseerChat: ObservableObject {
         try Task.checkCancellation()
         guard let answer else { throw OverseerFailure.failed("Claude Code gave no answer.") }
         conversation.sessionId = id
+        conversation.instructions = OverseerPrompt.fingerprint
         return answer
     }
 
@@ -293,16 +360,16 @@ final class OverseerChat: ObservableObject {
 
     private func offer(_ card: RoutingCard) {
         self.card = card
-        AccessibilityNotification.Announcement(card.headline + ". Return sends, Escape cancels.").post()
+        let keys = card.isGoTo ? "Return goes there, Escape cancels." : "Return sends, Escape cancels."
+        AccessibilityNotification.Announcement(card.headline + ". " + keys).post()
     }
 
-    /// The only way anything the overseer proposes reaches a session: the user's Send on its card.
-    /// From the keyboard it waits until the card has been on screen a moment, so a Return already on
-    /// its way cannot send what nobody has read.
+    /// The only way anything the overseer proposes reaches a session or moves a tab: the user's Send, Start
+    /// or Go on its card. From the keyboard it waits until the card has been on screen a moment, so a Return
+    /// already on its way cannot act on what nobody has read.
     func confirm(using host: OverseerHost, fromKeyboard: Bool = false) async {
-        guard let card, card.canSend, !card.sending, !fromKeyboard || card.isArmed,
-              let prompt = card.prompt.trimmedNonEmpty
-        else { return }
+        guard let card, card.canSend, !card.sending, !fromKeyboard || card.isArmed else { return }
+        let prompt = card.prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         self.card?.sending = true
         switch card.kind {
         case .send(let places, _):
@@ -326,6 +393,14 @@ final class OverseerChat: ObservableObject {
             case nil: append(.note, "Could not open a tab in Ghostty. Nothing was started.")
             }
             unsaid.append("The developer started a new session in \(cwd) with: \(prompt)")
+        case .goTo(let places, _):
+            guard let place = places.first else { break }
+            if host.goTo(session: place.rowId) {
+                append(.note, "Went to \(Self.list([place])).")
+                unsaid.append("The developer went to \(Self.list([place])) to look for themselves.")
+            } else {
+                append(.note, "Could not find the tab of \(Self.list([place])). It may have closed.")
+            }
         case .choose:
             break
         }
@@ -333,20 +408,24 @@ final class OverseerChat: ObservableObject {
     }
 
     func cancelCard() {
-        guard card != nil else { return }
-        card = nil
-        append(.note, "Not sent.")
+        guard let card else { return }
+        self.card = nil
+        append(.note, card.isGoTo ? "Stayed here." : "Not sent.")
         unsaid.append("The developer cancelled your last proposal.")
     }
 
-    /// Turns a "which one?" card into one that sends to the session picked.
+    /// Narrows a "which one?" card to the session picked, still waiting for Send or Go.
     func choose(_ place: SessionPlace) {
-        guard let card, case .choose = card.kind else { return }
-        self.card = RoutingCard(kind: .send([place], missing: []), prompt: card.prompt)
+        guard let card else { return }
+        switch card.kind {
+        case .choose: self.card = RoutingCard(kind: .send([place], missing: []), prompt: card.prompt)
+        case .goTo(let places, _) where places.count > 1: self.card = RoutingCard(kind: .goTo([place], missing: []), prompt: "")
+        default: break
+        }
     }
 
-    /// A proposal waiting when the panel opens again must be read again before Return sends it.
-    func panelOpened() { card?.shownAt = Date() }
+    /// A proposal waiting when the window shows again must be read again before Return acts on it.
+    func windowShown() { card?.shownAt = Date() }
 
     private func append(_ role: OverseerMessage.Role, _ text: String) {
         conversation.append(OverseerMessage(role: role, text: text))
