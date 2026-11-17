@@ -60,8 +60,14 @@ final class LotcServer {
     }
 
     private func respond(to request: LotcRequest, over connection: LineConnection) async -> LotcResponse {
-        if case .permission(let hookInput) = request.command {
+        switch request.command {
+        case .permission(let hookInput):
             return .permission(await askPermission(hookInput, over: connection))
+        case .observe(let event):
+            store.observe(event)
+            return .accepted  // nobody waits for it
+        default:
+            break
         }
         return await run(request.command, caller: request.caller)
     }

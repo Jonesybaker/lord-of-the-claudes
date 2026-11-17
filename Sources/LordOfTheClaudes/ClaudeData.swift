@@ -33,6 +33,7 @@ final class ClaudeData: @unchecked Sendable {
 
     /// Claude Code keeps one `<pid>.json` per running process in ~/.claude/sessions.
     /// Files can outlive their process (crash, reboot), so each one is checked against the process table.
+    /// The observer's own summariser runs are listed there too, and left out.
     static func liveSessions() -> [LiveSession] {
         let dir = Self.home.appendingPathComponent("sessions")
         let files = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
@@ -42,7 +43,8 @@ final class ClaudeData: @unchecked Sendable {
                   let pid = json["pid"] as? Int,
                   let sessionId = json["sessionId"] as? String, UUID(uuidString: sessionId) != nil,
                   let cwd = json["cwd"] as? String,
-                  (json["kind"] as? String ?? "interactive") == "interactive"
+                  (json["kind"] as? String ?? "interactive") == "interactive",
+                  !ClaudeSummariser.isOwnRun(cwd: cwd)
             else { return nil }
             let startedAt = (json["startedAt"] as? Double).map { Date(timeIntervalSince1970: $0 / 1000) }
             guard ProcessTable.isSameProcess(pid_t(pid), startedAt: startedAt),
@@ -88,7 +90,7 @@ final class ClaudeData: @unchecked Sendable {
             .first { FileManager.default.fileExists(atPath: $0.path) }
     }
 
-    private static func findTitle(in data: Data) -> String? {
+    static func findTitle(in data: Data) -> String? {
         var custom: String?
         var generated: String?
         for line in data.split(separator: UInt8(ascii: "\n")) {

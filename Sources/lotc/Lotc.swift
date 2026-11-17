@@ -6,14 +6,19 @@ enum Lotc {
         lotc: work with the other Claude Code sessions in your Ghostty window, through Lord of the Claudes.
 
         Usage:
-          lotc list [--json]                    the sessions in this window: tab, status, waiting for you, lord, title
+          lotc list [--json]                    the sessions in this window: tab, status, waiting for you, lord, title,
+                                                and what each is doing
           lotc send <tab> <prompt>              type a prompt into another tab and submit it
           lotc broadcast <prompt>               send a prompt to every other tab in this window
           lotc wait <tab> [--timeout <seconds>] wait until that tab has finished what it was last sent, then print its answer
           lotc last <tab>                       print that tab's last answer now
           lotc lord                             make this session the lord of its window
-          lotc hooks install|uninstall|status   answer Claude Code's permission prompts in Lord of the Claudes
+          lotc digest [<tab>] [--all]           what each session in this window is for, where it has got to and
+                                                what it is blocked on; --all for every window
+          lotc hooks install|uninstall|status   answer permission prompts in Lord of the Claudes, and summarise
+                                                each session when Claude stops
           lotc permission                       the permission hook itself; Claude Code runs it
+          lotc observe                          the Stop hook itself; Claude Code runs it
 
         <tab> is a tab number from lotc list, or part of one session's title.
         A <prompt> of "-" is read from stdin.
@@ -33,8 +38,10 @@ enum Lotc {
         case wait(tab: String, timeout: TimeInterval)
         case last(tab: String)
         case lord
+        case digest(tab: String?, all: Bool)
         case hooks(HookCommand.Action)
         case permission
+        case observe
     }
 
     struct UsageError: Error, Equatable {
@@ -56,6 +63,10 @@ enum Lotc {
             return 0
         case .permission:
             return PermissionHookCommand.run()
+        case .observe:
+            // Claude Code waits for nothing from this hook; still, never outlive a moment.
+            DispatchQueue.global().asyncAfter(deadline: .now() + ObserveCommand.deadline) { exit(0) }
+            return ObserveCommand.run()
         case .hooks(let action):
             return HookCommand.run(action)
         default:
@@ -91,11 +102,24 @@ enum Lotc {
                 throw UsageError(message: "hooks needs one of install, uninstall or status")
             }
             return .hooks(action)
+        case "digest":
+            return try parseDigest(rest)
         case "permission":
             return .permission
+        case "observe":
+            return .observe
         default:
             throw UsageError(message: "there is no \"\(command)\" command. lotc --help lists them.")
         }
+    }
+
+    private static func parseDigest(_ rest: [String]) throws -> Invocation {
+        let all = rest.contains("--all")
+        let tabs = rest.filter { $0 != "--all" }
+        guard tabs.count <= 1, !(all && !tabs.isEmpty), !tabs.contains(where: { $0.hasPrefix("--") }) else {
+            throw UsageError(message: "digest takes one tab, or --all: lotc digest 2")
+        }
+        return .digest(tab: tabs.first, all: all)
     }
 
     private static func parseWait(_ rest: [String]) throws -> Invocation {
@@ -128,7 +152,9 @@ enum Lotc {
 
     private static func talkToApp(_ invocation: Invocation) -> Int32 {
         let claudeHome = ClaudeHome.url
-        guard let caller = Caller.sessionId(claudeHome: claudeHome) else {
+        let caller = Caller.sessionId(claudeHome: claudeHome)
+        // Every window's digests need no window of the caller's own, so they work from any terminal.
+        if caller == nil, invocation != .digest(tab: nil, all: true) {
             return fail("run lotc from a Claude Code session. None of its parent processes is in \(claudeHome.path)/sessions.")
         }
 
@@ -147,7 +173,9 @@ enum Lotc {
             (command, timeout) = (.last(tab: tab), 30)
         case .lord:
             (command, timeout) = (.lord, 15)
-        case .help, .hooks, .permission:
+        case .digest(let tab, let all):
+            (command, timeout) = (.digest(tab: tab, all: all), 15)
+        case .help, .hooks, .permission, .observe:
             return 2
         }
 
@@ -192,11 +220,15 @@ enum Lotc {
         case .lord(let group):
             print("This session is now the lord of \(group).")
             return 0
-        case .permission:
-            return fail("Lord of the Claudes sent an answer meant for the permission hook.")
+        case .briefing(let text):
+            print(text)
+            return 0
+        case .permission, .accepted:
+            return fail("Lord of the Claudes sent an answer meant for a hook.")
         }
     }
 
+    /// Each session's line, with its digest's state line under its title.
     static func table(_ listing: WindowListing) -> String {
         let header = ["TAB", "STATUS", "WAITING", "LORD", "TITLE"]
         let rows = listing.sessions.map { session in
@@ -204,9 +236,13 @@ enum Lotc {
              session.title + (session.isCaller ? "  (you)" : "")]
         }
         let widths = (0..<4).map { column in ([header] + rows).map { $0[column].count }.max() ?? 0 }
-        let lines = ([header] + rows).map { cells in
+        let line = { (cells: [String]) in
             (0..<4).map { cells[$0].padding(toLength: widths[$0], withPad: " ", startingAt: 0) }.joined(separator: "  ")
                 + "  " + cells[4]
+        }
+        let indent = String(repeating: " ", count: widths.reduce(0, +) + 4 * 2)
+        let lines = [line(header)] + zip(listing.sessions, rows).flatMap { session, cells in
+            [line(cells)] + (session.digest.map { [indent + $0.state] } ?? [])
         }
         let count = listing.sessions.count
         return (["\(listing.group): \(count) session\(count == 1 ? "" : "s")"] + lines).joined(separator: "\n")
@@ -219,6 +255,7 @@ enum Lotc {
     private static func encoded(_ listing: WindowListing) -> String {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        encoder.dateEncodingStrategy = .iso8601
         return (try? encoder.encode(listing)).map { String(decoding: $0, as: UTF8.self) } ?? "{}"
     }
 

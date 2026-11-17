@@ -1,3 +1,4 @@
+import LotcKit
 import SwiftUI
 
 /// How long since the last prompt, as a badge that fades as the session goes stale.
@@ -42,6 +43,8 @@ struct SessionRow: View {
     @Binding var replyText: String
     let replyNote: SendNote?
     let sendReply: () -> Void
+    /// The digest's earlier steps are on show.
+    @Binding var historyOpen: Bool
     var focus: FocusState<PanelField?>.Binding
     @State private var hovering = false
 
@@ -55,10 +58,19 @@ struct SessionRow: View {
     }
 
     private var subtitle: String {
-        let prompt = row.prompts.last.map { oneLine($0.text) } ?? shortCwd
-        if row.needsYou, let since = row.statusSince { return "Finished \(shortAge(since)) ago · \(prompt)" }
-        if row.status == "busy" { return "Working · \(prompt)" }
-        return prompt
+        if row.needsYou, let since = row.statusSince { return "Finished \(shortAge(since)) ago · \(doing)" }
+        if row.status == "busy" { return "Working · \(doing)" }
+        return doing
+    }
+
+    /// What it is blocked on, else where it has got to, else the last prompt. A prompt newer than the
+    /// digest is the newer news: the digest is from before Claude took it up.
+    private var doing: String {
+        let prompt = row.prompts.last
+        if let digest = row.digest, prompt.map({ $0.date <= digest.at }) ?? true {
+            return digest.blockedOn.map { "Needs you: " + $0 } ?? digest.state
+        }
+        return prompt.map { oneLine($0.text) } ?? shortCwd
     }
 
     var body: some View {
@@ -129,6 +141,10 @@ struct SessionRow: View {
         VStack(alignment: .leading, spacing: 5) {
             Text(shortCwd + (row.status.map { " · \($0)" } ?? " · closed"))
                 .font(.caption).foregroundStyle(.secondary)
+            if let digest = row.digest {
+                DigestView(digest: digest, earlier: row.digestHistory.filter { $0 != digest }.reversed(),
+                           historyOpen: $historyOpen)
+            }
             if row.isLive { reply }
             if row.prompts.isEmpty {
                 Text("No prompts in Claude's history for this session.").font(.caption).foregroundStyle(.secondary)
@@ -160,5 +176,69 @@ struct SessionRow: View {
             if let replyNote { SendNoteView(note: replyNote) }
         }
         .padding(.vertical, 2)
+    }
+}
+
+/// The observer's three lines on a session, and the steps before them behind a disclosure.
+struct DigestView: View {
+    let digest: Digest
+    /// Newest first.
+    let earlier: [Digest]
+    @Binding var historyOpen: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 8, verticalSpacing: 3) {
+                line("Goal", digest.goal)
+                line("Now", digest.state)
+                if let blockedOn = digest.blockedOn { line("Blocked on", blockedOn, labelColour: .waiting) }
+            }
+            Text("Summarised \(shortAge(digest.at) == "now" ? "just now" : shortAge(digest.at) + " ago")")
+                .font(.caption).foregroundStyle(.secondary)
+            if !earlier.isEmpty { history }
+        }
+        .padding(.vertical, 2)
+    }
+
+    private func line(_ label: String, _ text: String, labelColour: Color? = nil) -> some View {
+        GridRow {
+            Text(label)
+                .font(.caption.weight(.medium))
+                .foregroundStyle(labelColour.map(AnyShapeStyle.init) ?? AnyShapeStyle(.secondary))
+                .gridColumnAlignment(.trailing)
+            Text(text)
+                .font(.callout)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    private var history: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Button { historyOpen.toggle() } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: historyOpen ? "chevron.down" : "chevron.right").frame(width: 10)
+                    Text("Earlier (\(earlier.count))")
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.borderless)
+            .help(historyOpen ? "Hide what it did before" : "Show what it did before")
+            .accessibilityLabel(historyOpen ? "Hide earlier steps" : "Show \(earlier.count) earlier steps")
+            if historyOpen {
+                ForEach(Array(earlier.enumerated()), id: \.offset) { _, step in
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text(shortAge(step.at))
+                            .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                            .frame(width: 28, alignment: .trailing)
+                        Text(step.state).font(.caption).fixedSize(horizontal: false, vertical: true)
+                            .textSelection(.enabled)
+                    }
+                    .accessibilityElement(children: .combine)
+                }
+            }
+        }
     }
 }

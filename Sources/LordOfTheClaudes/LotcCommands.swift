@@ -10,6 +10,7 @@ extension LotcServer {
         """
 
     func run(_ command: LotcCommand, caller: String?) async -> LotcResponse {
+        if case .digest(_, all: true) = command { return .briefing(store.digestBriefing()) }
         guard let caller,
               let group = store.groups.first(where: { $0.rows.contains { $0.id == caller } })
         else { return .failure(Self.notTracked) }
@@ -55,8 +56,15 @@ extension LotcServer {
             store.makeLord(caller)
             return .lord(group: group.name)
 
-        case .permission:
-            return .failure("Permission requests are answered elsewhere.")
+        case .digest(let tab, _):
+            guard let tab else { return .briefing(DigestBriefing.text([.init(name: group.name, rows: group.rows)])) }
+            switch SessionTarget.find(tab, in: group.rows) {
+            case .failure(let problem): return .failure(problem.message)
+            case .success(let row): return .briefing(DigestBriefing.text([.init(name: group.name, rows: [row])]))
+            }
+
+        case .permission, .observe:
+            return .failure("Hooks are answered elsewhere.")
         }
     }
 
@@ -108,7 +116,7 @@ extension LotcServer {
         SessionSummary(
             tab: row.tab ?? 0, title: row.title, sessionId: row.id, cwd: row.cwd,
             status: row.status ?? "closed", waitingForYou: row.needsYou, isLord: row.isLord,
-            isCaller: row.id == caller)
+            isCaller: row.id == caller, digest: row.digest)
     }
 
     private static func cannotType(_ row: Row) -> String {
