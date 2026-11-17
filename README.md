@@ -18,6 +18,7 @@ One window to rule them all. A macOS app in the menu bar that tracks every Claud
 - **Replies without switching tabs.** Type in a session's "Send a prompt" box and press Return. Cmd+R takes you there for the selected session.
 - **Prompts a group at once.** The megaphone on a group sends one prompt to every session in it. It lists exactly who gets it and asks once more before it sends.
 - **Answers permission prompts in one window.** Approve, deny, or tell Claude what to do instead.
+- **Approves the harmless ones by rule, if you let it.** Web searches, public pages and plain `curl` GETs, each by a fixed rule you switch on, every approval logged. See [Auto-approve safe requests](#auto-approve-safe-requests).
 - **Sums up each session.** Each time Claude stops, Haiku writes three lines: what the session is for, where it has got to and what it is waiting on you for.
 - **Lets one session direct the rest.** A lord session runs `lotc` to prompt its siblings and read their answers.
 - **Flags the ones waiting for you.** A session that finishes work while its tab is out of sight gets a bell. Sessions reopened after a restart come back quiet. The menu bar shows the count as "2/7".
@@ -131,6 +132,48 @@ Plain Return never approves: the window takes focus while you may be typing some
 
 If Lord of the Claudes is not running, Claude Code asks in the terminal as usual. `lotc hooks install` edits `~/.claude/settings.json`, leaves the rest of it as it was and keeps a backup beside it. Run it again after an upgrade to add a hook you do not have yet. `lotc hooks status` says which are in, and `lotc hooks uninstall` takes both out again.
 
+## Auto-approve safe requests
+
+<p align="center">
+  <img src="docs/window-auto-approve-dark.png" width="820" alt="The Auto-approve page: the master switch on, three of four rules on, one excluded directory, and the newest approvals: web searches, public page fetches and a curl status check">
+</p>
+
+Some permission prompts are not worth your attention: a subagent's web search, a fetch of a public docs page. The Auto-approve page, under the Overseer in the sidebar, lets fixed rules answer those for you.
+
+- **A rule can only approve.** It never denies. Whatever no rule recognises comes to the permission window exactly as before.
+- **No model decides.** Each rule is plain code reading the request: the tool, its input and the session's directory. A flag it does not know, a character it cannot account for, a field it has not seen: it asks you.
+- **Off until you turn it on.** The master switch starts off. Each rule has its own switch beneath it.
+- **Everything approved is logged.** The page lists the last 500 approvals, newest first: when, which session, which tool, what it approved and by which rule. Click one for the full text and "Stop approving this rule". The sidebar entry counts the last hour.
+- **A rule that says no tells you why.** When a request reaches the window though a rule for its tool is on, the window says why in one line, such as "Not auto-approved: the URL carries a parameter named token".
+- **Decided once, on arrival.** Switching a rule on never answers a question already in the window.
+
+| Rule | Approves | Starts |
+| --- | --- | --- |
+| Web search | WebSearch, unless the query or a domain filter looks like it holds a secret. | On |
+| Fetch a public page | WebFetch of an `https` URL with no user name or password, on the standard port, to a public host. Not `localhost`, not an IP address of any kind (private or public, dotted, decimal, hex or IPv6), not a name without a dot, not `.local`, `.internal`, `.lan`, `.home.arpa` and the like, not a name such as `127.0.0.1.nip.io` that points back at your Mac. No parameter named like a credential (`token`, `key`, `api_key`, `secret`, `password`, `auth`, `sig`, `signature`, `session`, `sid`, `jwt`, `code` and their relations), and nothing in the URL or the prompt that looks like a secret. | On |
+| Shell GET with curl or wget | A Bash command that is one `curl` or `wget` and nothing else, fetching one URL that passes the checks above, with only these flags. curl: `-s`, `-S`, `-L`, `-f`, `-I`, `--compressed`, `-m`, `--connect-timeout`, `-A`, `-H` with an Accept or Accept-Language header, `-o /dev/null`, `-w` with plain `%{...}` fields, `-X GET`, and their long forms. wget: `-q`, `-S`, `-nv`, `--spider`, `-O -` or `-O /dev/null`, `-T`, `--connect-timeout`, `-U`, `--header` with Accept or Accept-Language. wget needs `-O -`, `-O /dev/null` or `--spider`, as it saves to a file otherwise. | On |
+| Read-only shell commands | `ls`, `pwd`, and `git status`, `log`, `diff`, `show` and `branch` listings, with a short list of flags that cannot write or run anything. git runs whatever the repository's config tells it to (an fsmonitor, a diff driver, a signature check), so this one starts off. | Off |
+
+Any other flag asks, which rules out other methods, bodies, uploads, logins, cookies, config files, proxies, sockets and written files without naming each. So does anything the shell would do before running the command: pipes, redirects, `;`, `&&`, `||`, `&`, `$`, backticks, globs, braces, `~`, `#`, a second line, or a character outside plain ASCII such as a look-alike dash. Quoted, those are just text: `curl -A 'shop|bot' https://example.com` is fine. A request carrying a field the rules have not seen asks too, so a Claude Code release that adds one goes to the window until the rules learn it.
+
+### Excluded directories
+
+A session working in an excluded directory is never auto-approved, never summarised by the observer, and left out of the overseer's briefing and `lotc digest`. The sidebar still shows it, by title only, with a lock. Add directories on the Auto-approve page; `~` works in the file. A session counts as inside when the directory it started in or the one it is in now is the excluded one or below it, through symlinks and in any case: `~/tax` holds `~/tax/2025` but not `~/taxes`.
+
+### What it cannot do
+
+An approved search or fetch still brings text from the web into the session, and that text is untrusted: a page can carry instructions meant for Claude. The query or URL itself also leaves your Mac, so a session that has read a secret could in principle send it out inside a search query or a URL. The secret detector looks for common token shapes (AWS key ids, `sk-`, `ghp_`, `xoxb-` and `glpat-` prefixes, JWTs, PEM blocks, `Bearer` and `Basic` credentials, `password=` pairs, long random strings) and asks when it sees one. That narrows the gap; it does not close it. Beyond that, `curl -L` follows redirects wherever a page sends it, a public name can resolve to a private address, and curl and wget read their own `~/.curlrc` and `~/.wgetrc`. If any of that matters for a piece of work, leave the rule off or exclude its directory.
+
+For a blanket yes to a whole tool, Claude Code's own [`permissions.allow`](https://code.claude.com/docs/en/permissions) rules are simpler and need no app. These rules are for the cases that depend on what is in the request. A hook's yes never overrides your `permissions.deny` or `ask` rules.
+
+### Where it lives
+
+The switches and directories are in `auto-approve.json`, the log in `auto-approve-log.json`, both beside `state.json`. `lotc approvals` prints the log, `lotc approvals status` the switches, from any terminal. No `lotc` command switches a rule on: a session must not be able to widen its own permissions. The app reads the file at launch and writes it as you change the page, so an edit made to it while the app runs is lost. If the app is not running, `lotc permission` does nothing and Claude Code asks in the terminal: no rule runs without the app there to log it.
+
+<p align="center">
+  <img src="docs/window-auto-approve.png" width="820" alt="The Auto-approve page in the light theme">
+</p>
+
 ## Know what every session is doing
 
 <p align="center">
@@ -194,7 +237,7 @@ Links pasted into a session are picked up by themselves. To turn a Jira key or t
 - It drives Ghostty through AppleScript. Tabs are matched to sessions by title. A new session's tab reads "Claude Code" until Claude names it, so it is matched by directory instead, when it is the only such session and tab there. It never guesses: a session it cannot place shows under "Other" when grouped by window.
 - Replies and broadcasts are typed into the tab through AppleScript, as if you had typed them.
 - `lotc` talks to the app over a Unix socket only you can open: `~/Library/Application Support/LordOfTheClaudes/lotc.sock`. It finds its session by walking up its parent processes to one listed in `~/.claude/sessions`.
-- It only reads Claude's files, except that `lotc hooks install` adds two hooks to `~/.claude/settings.json`. Its own state, summaries and topics included, is `~/Library/Application Support/LordOfTheClaudes/state.json`, with `overseer.json` and `overseer-settings.json` beside it.
+- It only reads Claude's files, except that `lotc hooks install` adds two hooks to `~/.claude/settings.json`. Its own state, summaries and topics included, is `~/Library/Application Support/LordOfTheClaudes/state.json`, with `overseer.json`, `overseer-settings.json`, `auto-approve.json` and `auto-approve-log.json` beside it.
 - The overseer's conversation is an ordinary Claude Code session in `~/Library/Application Support/LordOfTheClaudes/overseer`. It is never listed in the sidebar, and runs with `LOTC_OBSERVER=1` so `lotc`'s own hooks leave it alone.
 - The app has no network code. The summariser's `claude -p` runs and what you ask the overseer, with the briefing, go to Anthropic through Claude Code. Nothing else leaves your Mac.
 
@@ -206,6 +249,7 @@ Claude Code's session files are undocumented and can change in any release. Test
 
 - `./build.sh test` runs the tests.
 - `LOTC_WINDOW_TESTS=1 ./build.sh test` also opens the permission window.
+- `swift build && LOTC_LIVE_HOOK_TESTS=1 LOTC_SOCKET=/tmp/lotc-live/lotc.sock ./build.sh test --filter LiveHookTests` runs real `claude -p` sessions, with Haiku, against this build's permission hook on a private socket: a fetch, a search and a `curl` GET are approved and logged without reaching the window, and a `curl -X POST` waits in it.
 - To try `lotc` beside an installed copy, run the build with `LOTC_SANDBOX=1 LOTC_SOCKET=<path>`. That turns off the hotkey and state.json, and keeps the overseer's files in a temporary folder. Set the same `LOTC_SOCKET` for `lotc`.
 - `.build/debug/LordOfTheClaudes --summarise <transcript.jsonl>` runs the summariser once on a transcript and prints what it wrote.
 - `LOTC_SANDBOX=1 .build/debug/LordOfTheClaudes --ask <briefing.txt> "<question>"` asks the overseer once against a briefing in a file, in the shape `lotc digest --all` prints, and shows what it proposes. Nothing is kept.
@@ -215,6 +259,8 @@ Claude Code's session files are undocumented and can change in any release. Test
 The screenshots show made-up sessions. Regenerate them with:
 
     swift build -c release && .build/release/LordOfTheClaudes --screenshots docs
+
+Name shots after the folder to take only those, such as `window-auto-approve`. A shot taken alone draws its window as the active one.
 
 ## Licence
 

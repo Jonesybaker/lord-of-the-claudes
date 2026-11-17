@@ -2,7 +2,7 @@ import AppKit
 import LotcKit
 import SwiftUI
 
-/// `--screenshots <dir>` renders the window with made-up sessions to PNG files and exits.
+/// `--screenshots <dir> [<name>...]` renders the window with made-up sessions to PNG files and exits.
 /// `--summarise <transcript.jsonl>` runs the observer's summariser once on a transcript and prints the digest.
 /// `--ask <briefing.txt> <question>` asks the overseer once, as a fresh conversation, and prints what it proposes.
 /// Anything else runs the menu bar app.
@@ -11,7 +11,8 @@ enum Main {
     static func main() {
         let args = CommandLine.arguments
         if let flag = args.firstIndex(of: "--screenshots"), args.indices.contains(flag + 1) {
-            MainActor.assumeIsolated { Screenshots.render(into: URL(fileURLWithPath: args[flag + 1])) }
+            let only = Set(args[(flag + 2)...].filter { !$0.hasPrefix("-") })
+            MainActor.assumeIsolated { Screenshots.render(into: URL(fileURLWithPath: args[flag + 1]), only: only) }
         } else if let flag = args.firstIndex(of: "--summarise"), args.indices.contains(flag + 1) {
             summarise(URL(fileURLWithPath: args[flag + 1]))
         } else if let flag = args.firstIndex(of: "--ask"), args.indices.contains(flag + 2) {
