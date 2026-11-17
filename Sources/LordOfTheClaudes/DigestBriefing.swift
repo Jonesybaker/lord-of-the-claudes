@@ -2,6 +2,7 @@ import Foundation
 import LotcKit
 
 /// The digests as plain text for a model to read: `lotc digest`, and the overseer's view of every window.
+/// Grouped by window, as tab numbers count within a window; each session names its topic.
 enum DigestBriefing {
     struct Group {
         let name: String
@@ -25,7 +26,7 @@ enum DigestBriefing {
                       row.needsYou ? "waiting for you" : nil, row.isLord ? "lord" : nil].compactMap { $0 }
         let place = row.tab.map { "tab \($0)" } ?? "no tab"
         let cwd = row.cwd.hasPrefix(home + "/") ? "~" + row.cwd.dropFirst(home.count) : row.cwd
-        var lines = ["\(place): \(row.title) [\(status.joined(separator: ", "))]", "  cwd: \(cwd)"]
+        var lines = ["\(place): \(row.title) [\(status.joined(separator: ", "))]", "  cwd: \(cwd)", "  topic: \(row.topicName)"]
         guard let digest = row.digest else {
             // Digests arrive at a session's next stop; until then its last prompt says most.
             guard let prompt = row.prompts.last else { return lines + ["  no digest yet"] }

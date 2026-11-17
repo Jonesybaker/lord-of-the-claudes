@@ -293,10 +293,10 @@ struct DigestBriefingTests {
     let now = Date(timeIntervalSince1970: 100_000)
 
     private func row(_ tab: Int?, _ title: String, status: String = "idle", waiting: Bool = false, lord: Bool = false,
-                     digest: Digest? = nil) -> Row {
+                     digest: Digest? = nil, topic: String? = nil) -> Row {
         Row(id: title, title: title, cwd: "/Users/fan/Projects/united", status: status, statusSince: nil,
             lastInteraction: now, needsYou: waiting, prompts: [], ticket: nil, windowId: "w", tab: tab, isLord: lord,
-            digest: digest)
+            digest: digest, topic: topic)
     }
 
     @Test func listsEverySessionWindowByWindowForAModelToRead() {
@@ -305,7 +305,7 @@ struct DigestBriefingTests {
         let kit = Digest(goal: "Order the away kit", state: "Order placed", at: now.addingTimeInterval(-20))
         let text = DigestBriefing.text([
             .init(name: "Scouting", rows: [row(1, "Centre-backs", waiting: true, lord: true, digest: scouting),
-                                           row(2, "Youth team", status: "busy")]),
+                                           row(2, "Youth team", status: "busy", topic: "Academy")]),
             .init(name: "Kit room", rows: [row(1, "Away kit", digest: kit)]),
             .init(name: "Other", rows: []),
         ], now: now, home: "/Users/fan")
@@ -315,17 +315,20 @@ struct DigestBriefingTests {
             ## Scouting
             tab 1: Centre-backs [idle, waiting for you, lord]
               cwd: ~/Projects/united
+              topic: united
               goal: Shortlist three centre-backs
               state: Two watched, one to go
               blocked on: Budget for the third
               summarised: 12m ago
             tab 2: Youth team [working]
               cwd: ~/Projects/united
+              topic: Academy
               no digest yet
 
             ## Kit room
             tab 1: Away kit [idle]
               cwd: ~/Projects/united
+              topic: united
               goal: Order the away kit
               state: Order placed
               blocked on: nothing

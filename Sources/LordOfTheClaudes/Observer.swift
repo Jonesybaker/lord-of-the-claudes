@@ -27,6 +27,8 @@ final class Observer {
 
     private let summariser: Summariser
     private let read: @Sendable (StopEvent) -> Excerpt?
+    /// The topics to offer for a session: its own so far, and every one in use.
+    private let topics: @MainActor (String) -> TopicContext
     private let deliver: @MainActor (String, Digest) -> Void
     private let settle: Duration
     private let timeout: Duration
@@ -44,9 +46,11 @@ final class Observer {
 
     init(summariser: Summariser, read: @escaping @Sendable (StopEvent) -> Excerpt?,
          settle: Duration = Observer.settle, timeout: Duration = Observer.timeout, maxRunning: Int = Observer.maxRunning,
+         topics: @escaping @MainActor (String) -> TopicContext = { _ in .none },
          deliver: @escaping @MainActor (String, Digest) -> Void) {
         self.summariser = summariser
         self.read = read
+        self.topics = topics
         self.settle = settle
         self.timeout = timeout
         self.maxRunning = maxRunning
@@ -81,8 +85,9 @@ final class Observer {
               excerpt.fingerprint != summarised[id]
         else { return }
         let summariser = self.summariser
+        let input = DigestReply.input(excerpt.text, topics: topics(id))
         do {
-            let reply = try await withDeadline(timeout) { try await summariser.summarise(excerpt.text) }
+            let reply = try await withDeadline(timeout) { try await summariser.summarise(input) }
             guard let digest = DigestReply.parse(reply, at: Date()) else {
                 NSLog("Lord of the Claudes: the summariser's reply had no digest in it")
                 return
@@ -148,25 +153,39 @@ final class Once<Value>: @unchecked Sendable {
 
 /// What the summariser is asked, and how its reply becomes a `Digest`.
 enum DigestReply {
-    /// Longer lines are cut: the panel shows one line of each.
+    /// Longer lines are cut: the sidebar shows one line of each.
     static let lineCap = 160
 
     static let instructions = """
-        You write a three-line status digest of a Claude Code session, for a panel a developer glances at.
+        You write a four-line status digest of a Claude Code session, for a window a developer glances at.
         The user message is an excerpt of that session's transcript: its title, its working directory, its first \
-        prompt, and its latest exchanges between the developer ("User") and Claude, with the tools Claude ran.
+        prompt, and its latest exchanges between the developer ("User") and Claude, with the tools Claude ran. \
+        It may end with the topics already in use.
         You are not that session. Do not continue its work, answer its questions or judge whether it could do \
         what it says. Only describe it.
-        Reply with exactly these three lines and nothing else:
+        Reply with exactly these four lines and nothing else:
         GOAL: what the session is for, at most 12 words
         STATE: where the work has got to now, at most 15 words
         BLOCKED: what Claude is waiting for from the developer right now, at most 12 words, or none
+        TOPIC: the subject the session belongs under, one to three words, first word capitalised, like \
+        "Shop checkout", "Holiday" or "Tax"
         BLOCKED is none unless Claude's last message asks the developer something, waits for a decision or \
         an approval, or cannot go on without them.
+        TOPIC groups related sessions. When one of the topics in use fits, copy it exactly. Keep the session's \
+        own topic so far unless its work has plainly moved to another subject. Only make up a new topic when \
+        none fits. Name the subject, not the activity: "Tax", not "Answering a question".
         Plain text, no markdown, UK English.
         """
 
-    /// The `GOAL:`, `STATE:` and `BLOCKED:` lines of a reply. Nil without a goal and a state.
+    /// The excerpt with the topics to choose from after it. Without any, the excerpt as it is.
+    static func input(_ excerpt: String, topics: TopicContext) -> String {
+        var lines: [String] = []
+        if !topics.inUse.isEmpty { lines.append("Topics already in use: " + topics.inUse.joined(separator: "; ")) }
+        if let current = topics.current { lines.append("This session's topic so far: \(current)") }
+        return lines.isEmpty ? excerpt : excerpt + "\n\n" + lines.joined(separator: "\n")
+    }
+
+    /// The `GOAL:`, `STATE:`, `BLOCKED:` and `TOPIC:` lines of a reply. Nil without a goal and a state.
     static func parse(_ reply: String, at date: Date) -> Digest? {
         var fields: [String: String] = [:]
         for raw in reply.split(whereSeparator: \.isNewline) {
@@ -175,13 +194,13 @@ enum DigestReply {
                 .replacingOccurrences(of: "**", with: "")
             guard let colon = line.firstIndex(of: ":") else { continue }
             let key = line[..<colon].lowercased().trimmingCharacters(in: .whitespaces)
-            let name = ["goal": "goal", "state": "state", "blocked": "blocked", "blocked on": "blocked"][key]
+            let name = ["goal": "goal", "state": "state", "blocked": "blocked", "blocked on": "blocked", "topic": "topic"][key]
             guard let name, fields[name] == nil else { continue }
             fields[name] = clean(String(line[line.index(after: colon)...]))
         }
         guard let goal = fields["goal"], !goal.isEmpty, let state = fields["state"], !state.isEmpty else { return nil }
         let blocked = fields["blocked"].flatMap { isNothing($0) ? nil : $0 }
-        return Digest(goal: goal, state: state, blockedOn: blocked, at: date)
+        return Digest(goal: goal, state: state, blockedOn: blocked, at: date, topic: fields["topic"].flatMap(Topics.clean))
     }
 
     /// `claude -p --output-format json` prints one object: `{"type":"result","is_error":false,"result":"..."}`.

@@ -8,6 +8,8 @@ struct RoutingCard: Identifiable, Equatable {
         case send([SessionPlace], missing: [String])
         case newSession(cwd: String, group: String?, windowId: String?)
         case choose(question: String, candidates: [SessionPlace])
+        /// Brings one session's tab to the front. Several are a "which one?"; none, a session not found.
+        case goTo([SessionPlace], missing: [String])
     }
 
     /// See PermissionQueue.armingDelay.
@@ -21,14 +23,18 @@ struct RoutingCard: Identifiable, Equatable {
 
     var isArmed: Bool { Date().timeIntervalSince(shownAt) >= Self.armingDelay }
 
+    /// Its Send, Start or Go can be pressed: something to act on, and a prompt where one is needed.
     var canSend: Bool {
+        if case .goTo(let places, _) = kind { return places.count == 1 }
         guard prompt.trimmedNonEmpty != nil else { return false }
         switch kind {
         case .send(let places, _): return !places.isEmpty
         case .newSession(let cwd, _, _): return Self.isDirectory(cwd)
-        case .choose: return false
+        case .choose, .goTo: return false
         }
     }
+
+    var isGoTo: Bool { if case .goTo = kind { true } else { false } }
 
     var headline: String {
         switch kind {
@@ -36,6 +42,9 @@ struct RoutingCard: Identifiable, Equatable {
         case .send(let places, _): return "Send to " + places.map { "\($0.spot), \($0.title)" }.formatted(.list(type: .and))
         case .newSession(_, let group, _): return "Start a new session" + (group.map { " in \($0)" } ?? "")
         case .choose(let question, _): return question
+        case .goTo(let places, _) where places.isEmpty: return "Could not find that session"
+        case .goTo(let places, _) where places.count == 1: return "Go to \(places[0].spot), \(places[0].title)"
+        case .goTo: return "Which session?"
         }
     }
 
@@ -73,6 +82,12 @@ struct RoutingCard: Identifiable, Equatable {
             return RoutingCard(kind: found.isEmpty ? .send([], missing: candidates.map(describe))
                                                    : .choose(question: question ?? "Which session?", candidates: found),
                                prompt: prompt)
+        case .goTo(let target):
+            switch TargetMatch.find(target, in: places) {
+            case .one(let place): return RoutingCard(kind: .goTo([place], missing: []), prompt: "")
+            case .several(let candidates): return RoutingCard(kind: .goTo(unique(candidates), missing: []), prompt: "")
+            case .none: return RoutingCard(kind: .goTo([], missing: [describe(target)]), prompt: "")
+            }
         }
     }
 
@@ -95,71 +110,86 @@ struct RoutingCard: Identifiable, Equatable {
     }
 }
 
-/// The card on screen. Return sends and Esc cancels while its prompt has the keyboard (PanelView's keys).
+/// The card on screen. Return sends, starts or goes, and Esc cancels, while it has the keyboard (MainView's keys).
 struct RoutingCardView: View {
     @Binding var card: RoutingCard
     let send: () -> Void
     let cancel: () -> Void
     let choose: (SessionPlace) -> Void
-    var focus: FocusState<PanelField?>.Binding
+    var focus: FocusState<MainField?>.Binding
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 6) {
                 Image(systemName: icon).foregroundStyle(Color.accentColor)
                 Text(card.headline).font(.callout.weight(.semibold)).lineLimit(2)
             }
             .accessibilityElement(children: .combine)
             details
-            if case .choose(_, let candidates) = card.kind {
-                ForEach(candidates, id: \.rowId) { place in
-                    Button { choose(place) } label: {
-                        Text("\(place.spot): \(place.title)").lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    .buttonStyle(.bordered)
+            ForEach(candidates, id: \.rowId) { place in
+                Button { choose(place) } label: {
+                    Text("\(place.spot): \(place.title)").lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
                 }
+                .buttonStyle(.bordered)
             }
-            prompt
+            if card.hasPrompt { prompt }
             HStack(spacing: 8) {
                 if card.sending {
                     ProgressView().controlSize(.small)
-                    Text("Sending...").font(.caption).foregroundStyle(.secondary)
+                    Text(card.isGoTo ? "Going..." : "Sending...").font(.caption).foregroundStyle(.secondary)
+                } else if card.canSend {
+                    Text(card.isGoTo ? "Return goes there." : "Return sends.").font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
                 Button("Cancel", action: cancel).help("Esc cancels too")
                 if card.canSend || card.sending {
-                    Button(isNew ? "Start" : "Send", action: send)
+                    Button(actionTitle, action: send)
                         .buttonStyle(.borderedProminent)
                         .disabled(card.sending)
-                        .help("Return sends it too, while the prompt has the keyboard")
+                        .help(card.isGoTo ? "Brings its Ghostty tab to the front" : "Return sends it too, while the prompt has the keyboard")
                 }
             }
             .controlSize(.small)
         }
-        .padding(8)
-        .background(RoundedRectangle(cornerRadius: 8).fill(Color.accentColor.opacity(0.1)))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.accentColor.opacity(0.5)))
+        .padding(10)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Color.accentColor.opacity(0.1)))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.accentColor.opacity(0.5)))
     }
 
-    private var isNew: Bool { if case .newSession = card.kind { true } else { false } }
+    private var actionTitle: String {
+        switch card.kind {
+        case .newSession: "Start"
+        case .goTo: "Go"
+        default: "Send"
+        }
+    }
+
+    private var candidates: [SessionPlace] {
+        switch card.kind {
+        case .choose(_, let candidates): candidates
+        case .goTo(let places, _) where places.count > 1: places
+        default: []
+        }
+    }
 
     private var icon: String {
         switch card.kind {
         case .send: "paperplane"
         case .newSession: "plus.rectangle.on.rectangle"
         case .choose: "questionmark.circle"
+        case .goTo: "arrow.up.forward.app"
         }
     }
 
     @ViewBuilder private var details: some View {
         switch card.kind {
-        case .send(let places, let missing):
+        case .send(let places, let missing), .goTo(let places, let missing):
             if !missing.isEmpty {
                 Text((places.isEmpty ? "No running session matches " : "Not found, so not sent: ") + missing.joined(separator: "; ") + ".")
                     .font(.caption).foregroundStyle(.secondary)
             }
         case .newSession(let cwd, _, let windowId):
-            Text(shortPath(cwd) + (windowId == nil ? " · opens in the front window" : ""))
+            Text(SessionText.shortPath(cwd) + (windowId == nil ? " · opens in the front window" : ""))
                 .font(.caption).foregroundStyle(.secondary)
             if !card.canSend && card.prompt.trimmedNonEmpty != nil {
                 Text("There is no such directory.").font(.caption).foregroundStyle(Color.waiting)
@@ -169,21 +199,12 @@ struct RoutingCardView: View {
         }
     }
 
-    @ViewBuilder private var prompt: some View {
-        if case .send(let places, _) = card.kind, places.isEmpty {
-            EmptyView()
-        } else {
-            TextField("Prompt", text: $card.prompt, axis: .vertical)
-                .textFieldStyle(.roundedBorder)
-                .lineLimit(1...6)
-                .focused(focus, equals: .proposal)
-                .disabled(card.sending)
-                .accessibilityLabel("Prompt to send. Edit it before sending.")
-        }
-    }
-
-    private func shortPath(_ path: String) -> String {
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        return path.hasPrefix(home) ? "~" + path.dropFirst(home.count) : path
+    private var prompt: some View {
+        TextField("Prompt", text: $card.prompt, axis: .vertical)
+            .textFieldStyle(.roundedBorder)
+            .lineLimit(1...6)
+            .focused(focus, equals: .proposal)
+            .disabled(card.sending)
+            .accessibilityLabel("Prompt to send. Edit it before sending.")
     }
 }

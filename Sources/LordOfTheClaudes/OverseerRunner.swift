@@ -11,6 +11,8 @@ struct OverseerRequest: Equatable, Sendable {
     /// Carry on the conversation with this id rather than start it.
     let resume: Bool
     let settings: OverseerSettings
+    /// False for a one-off that leaves no conversation behind: `--ask`.
+    var persist = true
 }
 
 enum OverseerEvent: Equatable, Sendable {
@@ -43,6 +45,7 @@ struct ClaudeCLI: OverseerRunning {
                     "--system-prompt", request.systemPrompt]
         args += request.resume ? ["--resume", request.sessionId] : ["--session-id", request.sessionId]
         if let effort = request.settings.effort { args += ["--effort", effort] }
+        if !request.persist { args.append("--no-session-persistence") }
         return args
     }
 

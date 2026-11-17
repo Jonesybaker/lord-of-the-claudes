@@ -24,21 +24,23 @@ enum NeedsYou {
     }
 }
 
+/// The sessions waiting for you, longest first. A click shows one's detail; its arrow goes to its tab.
 struct NeedsYouList: View {
     let rows: [Row]
     let places: [SessionPlace]
-    let jump: (Row) -> Void
+    let show: (Row) -> Void
+    let goTo: (Row) -> Void
 
     var body: some View {
         let waiting = NeedsYou.ranked(rows)
-        VStack(alignment: .leading, spacing: 2) {
+        VStack(alignment: .leading, spacing: 4) {
             Text(waiting.isEmpty ? "WAITING FOR YOU" : "WAITING FOR YOU, LONGEST FIRST")
                 .font(.caption2).foregroundStyle(.secondary)
                 .accessibilityAddTraits(.isHeader)
             if waiting.isEmpty {
                 let working = rows.filter { $0.status == "busy" }.count
                 Text("Nothing is waiting for you." + (working > 0 ? " \(working) working." : ""))
-                    .font(.callout).foregroundStyle(.secondary).padding(.vertical, 4)
+                    .foregroundStyle(.secondary).padding(.vertical, 4)
             }
             ForEach(waiting) { row in item(row) }
         }
@@ -46,25 +48,31 @@ struct NeedsYouList: View {
 
     private func item(_ row: Row) -> some View {
         let spot = places.first { $0.rowId == row.id }?.spot
-        return Button { jump(row) } label: {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Image(systemName: "bell.fill").font(.caption).foregroundStyle(Color.waiting)
-                VStack(alignment: .leading, spacing: 1) {
-                    HStack(spacing: 6) {
-                        Text(row.title).lineLimit(1)
-                        if let spot { Text(spot).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
+        let age = shortAge(NeedsYou.waitingSince(row))
+        return HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Button { show(row) } label: {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Image(systemName: "bell.fill").font(.caption).foregroundStyle(Color.waiting)
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: 6) {
+                            Text(row.title).lineLimit(1)
+                            if let spot { Text(spot).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
+                        }
+                        Text(NeedsYou.reason(row)).font(.callout).foregroundStyle(.secondary).lineLimit(2)
                     }
-                    Text(NeedsYou.reason(row)).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                    Spacer(minLength: 6)
+                    Text(age).font(.caption.monospacedDigit()).foregroundStyle(Color.waiting)
                 }
-                Spacer(minLength: 6)
-                Text(shortAge(NeedsYou.waitingSince(row)))
-                    .font(.caption.monospacedDigit()).foregroundStyle(Color.waiting)
+                .padding(.vertical, 4)
+                .contentShape(Rectangle())
             }
-            .padding(.vertical, 3)
-            .contentShape(Rectangle())
+            .buttonStyle(.plain)
+            .help("Show its detail")
+            .accessibilityLabel("\(row.title), \(spot ?? ""), waiting \(age). \(NeedsYou.reason(row))")
+            Button { goTo(row) } label: { Image(systemName: "arrow.up.forward.app") }
+                .buttonStyle(.borderless)
+                .help("Go to its tab")
+                .accessibilityLabel("Go to the tab of \(row.title)")
         }
-        .buttonStyle(.plain)
-        .help("Jump to its tab")
-        .accessibilityLabel("\(row.title), \(spot ?? ""), waiting \(shortAge(NeedsYou.waitingSince(row))). \(NeedsYou.reason(row))")
     }
 }
