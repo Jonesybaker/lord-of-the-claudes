@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import LotcKit
 
@@ -54,6 +55,64 @@ extension Screenshots {
                                           prompt: "add a test for an invoice with 21 lines, then fix the rounding"),
                                     places: places)
         return OverseerChat(demo: messages, card: card)
+    }
+
+    /// A screenshot pasted into a message, then a prompt proposed with it, waiting for Send.
+    @MainActor
+    static func imageChat(places: [SessionPlace]) -> OverseerChat {
+        let images = demoInvoice().map { [$0] } ?? []
+        let messages = [
+            OverseerMessage(role: .user, text: "another one a penny out, send it to the invoice session", attachments: images),
+            OverseerMessage(role: .overseer, text: "I would send this to [Invoice PDF rounding bug](session:Platform/2), with your screenshot."),
+        ]
+        var card = RoutingCard.make(.send(targets: [ProposedTarget(group: "Platform", tab: 2, title: "Invoice PDF rounding bug")],
+                                          prompt: "another invoice with the VAT a penny out, see the attached screenshot"),
+                                    places: places)
+        card.images = images
+        return OverseerChat(demo: messages, card: card)
+    }
+
+    /// A made-up invoice with its VAT ringed, drawn here so no real screen is shown.
+    private static func demoInvoice() -> AttachedImage? {
+        let size = NSSize(width: 720, height: 440)
+        guard let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(size.width), pixelsHigh: Int(size.height),
+                                            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                                            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)
+        else { return nil }
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: bitmap)
+        NSColor(white: 0.9, alpha: 1).setFill()
+        NSRect(origin: .zero, size: size).fill()
+        NSColor.white.setFill()
+        NSBezierPath(roundedRect: NSRect(x: 24, y: 24, width: 672, height: 392), xRadius: 10, yRadius: 10).fill()
+        func text(_ string: String, x: CGFloat, y: CGFloat, size: CGFloat, bold: Bool = false, right: Bool = false,
+                  colour: NSColor = NSColor(white: 0.15, alpha: 1)) {
+            let attributes: [NSAttributedString.Key: Any] = [
+                .font: bold ? NSFont.boldSystemFont(ofSize: size) : NSFont.systemFont(ofSize: size), .foregroundColor: colour,
+            ]
+            let width = (string as NSString).size(withAttributes: attributes).width
+            (string as NSString).draw(at: NSPoint(x: right ? x - width : x, y: y), withAttributes: attributes)
+        }
+        text("Invoice INV-2041", x: 60, y: 340, size: 44, bold: true)
+        text("United Kit Shop · 22 lines", x: 60, y: 304, size: 24, colour: .gray)
+        let rows: [(String, String, CGFloat)] = [("Subtotal", "£1,049.95", 236), ("VAT at 20%", "£210.00", 176), ("Total", "£1,259.95", 116)]
+        for (label, amount, y) in rows {
+            text(label, x: 60, y: y, size: 34, bold: label == "Total")
+            text(amount, x: 660, y: y, size: 34, bold: label == "Total", right: true)
+        }
+        NSColor(white: 0.8, alpha: 1).setFill()
+        NSRect(x: 60, y: 162, width: 600, height: 2).fill()
+        NSColor.systemRed.setStroke()
+        let ring = NSBezierPath(ovalIn: NSRect(x: 486, y: 164, width: 196, height: 64))
+        ring.lineWidth = 6
+        ring.stroke()
+        text("should be £209.99", x: 660, y: 54, size: 30, bold: true, right: true, colour: .systemRed)
+        NSGraphicsContext.restoreGraphicsState()
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("LordOfTheClaudes-screenshots")
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let file = directory.appendingPathComponent("invoice.png")
+        guard let png = bitmap.representation(using: .png, properties: [:]), (try? png.write(to: file)) != nil else { return nil }
+        return AttachedImage(path: file.path)
     }
 
     /// A send already confirmed, then a question the briefing cannot answer: a tab to look at, waiting for Go.
