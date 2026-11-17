@@ -2,7 +2,7 @@
 # Builds "Lord of the Claudes.app" into ./build, with the lotc command line tool inside it.
 # ./build.sh           build only
 # ./build.sh install   build, copy to /Applications, (re)start it and link lotc into Homebrew's bin
-# ./build.sh test      run the tests
+# ./build.sh test      run the tests; more arguments go to swift test, as in --filter LiveOverseerTests
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -14,7 +14,7 @@ if [ "${1:-}" = "test" ]; then
         flags=(-Xswiftc -F -Xswiftc "$CLT/Frameworks" -Xlinker -rpath -Xlinker "$CLT/Frameworks"
                -Xlinker -rpath -Xlinker "$CLT/usr/lib")
     fi
-    exec swift test ${flags[@]+"${flags[@]}"}
+    exec swift test ${flags[@]+"${flags[@]}"} "${@:2}"
 fi
 
 APP="build/Lord of the Claudes.app"

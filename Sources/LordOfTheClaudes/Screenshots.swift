@@ -18,6 +18,7 @@ enum Screenshots {
             Shot(name: "window-light", appearance: .aqua, grouping: .window, chat: { _ in questionChat() }),
             Shot(name: "window-overseer", appearance: .darkAqua, chat: { sendChat(places: $0) }),
             Shot(name: "window-goto", appearance: .aqua, chat: { goToChat(places: $0) }),
+            Shot(name: "window-image", appearance: .aqua, chat: { imageChat(places: $0) }),
             Shot(name: "window-session", appearance: .darkAqua, pane: .session("2")),
             Shot(name: "window-reply", appearance: .aqua, pane: .session("1"),
                  drafts: ["1": "log the random seed on every run, then run it 50 times"]),

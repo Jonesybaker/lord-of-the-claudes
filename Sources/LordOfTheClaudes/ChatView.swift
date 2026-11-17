@@ -6,6 +6,7 @@ struct ChatView: View {
     @ObservedObject var chat: OverseerChat
     @ObservedObject var model: WindowModel
     var focus: FocusState<MainField?>.Binding
+    @State private var dropping = false
 
     private static let bottomId = "chat-bottom"
     private var store: Store { model.store }
@@ -43,6 +44,8 @@ struct ChatView: View {
             .readingColumn()
             .padding(.top, 8).padding(.bottom, 12)
         }
+        .takesDroppedImages(into: $chat.draftImages, isTargeted: $dropping)
+        .overlay { if dropping { DropHighlight() } }
         .environment(\.openURL, OpenURLAction { url in
             guard let id = AnswerText.sessionId(in: url) else { return .systemAction }
             if let row = store.rows.first(where: { $0.id == id }) { model.show(row) }
@@ -60,15 +63,16 @@ struct ChatView: View {
             if !model.sidebarVisible { SidebarButton(model: model) }
             Text("Overseer").font(.headline).accessibilityAddTraits(.isHeader)
             Spacer()
-            Button { chat.showingNeeds.toggle() } label: {
-                Label(chat.showingNeeds && !isEmpty ? "Back to the chat" : "What needs me",
-                      systemImage: chat.showingNeeds && !isEmpty ? "bubble.left.and.bubble.right" : "bell")
+            // An empty chat already shows what needs you and has nothing to clear.
+            if !isEmpty {
+                Button { chat.showingNeeds.toggle() } label: {
+                    Label(chat.showingNeeds ? "Back to the chat" : "What needs me",
+                          systemImage: chat.showingNeeds ? "bubble.left.and.bubble.right" : "bell")
+                }
+                .help("Every session waiting for you, longest first")
+                Button(action: chat.newChat) { Label("New chat", systemImage: "square.and.pencil") }
+                    .help("Clear the conversation and start a new one with the overseer")
             }
-            .disabled(isEmpty)
-            .help("Every session waiting for you, longest first")
-            Button(action: chat.newChat) { Label("New chat", systemImage: "square.and.pencil") }
-                .disabled(isEmpty)
-                .help("Clear the conversation and start a new one with the overseer")
         }
         .buttonStyle(.borderless)
         .padding(.horizontal, 16)
@@ -80,13 +84,23 @@ struct ChatView: View {
         case .user:
             HStack {
                 Spacer(minLength: 80)
-                Text(message.text)
-                    .textSelection(.enabled)
-                    .padding(.horizontal, 12).padding(.vertical, 7)
-                    .background(RoundedRectangle(cornerRadius: 12).fill(Color.accentColor.opacity(0.18)))
+                VStack(alignment: .trailing, spacing: 6) {
+                    if !message.images.isEmpty {
+                        HStack(spacing: 6) {
+                            ForEach(Array(message.images.enumerated()), id: \.element) { index, image in
+                                Thumbnail(image: image, height: 96, label: "Image \(index + 1) of \(message.images.count)", opens: true)
+                            }
+                        }
+                    }
+                    if !message.text.isEmpty {
+                        Text(message.text)
+                            .textSelection(.enabled)
+                            .padding(.horizontal, 12).padding(.vertical, 7)
+                            .background(RoundedRectangle(cornerRadius: 12).fill(Color.accentColor.opacity(0.18)))
+                            .accessibilityLabel("You: \(message.text)")
+                    }
+                }
             }
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel("You: \(message.text)")
         case .overseer:
             Text(AnswerText.attributed(message.text, places: places))
                 .textSelection(.enabled)
@@ -117,7 +131,7 @@ struct ChatView: View {
     private var card: some View {
         RoutingCardView(
             card: Binding(get: { chat.card ?? RoutingCard(kind: .send([], missing: []), prompt: "") },
-                          set: { chat.card = $0 }),
+                          set: { card in if chat.card?.id == card.id { chat.card = card } }),
             send: {
                 Task {
                     await chat.confirm(using: store)

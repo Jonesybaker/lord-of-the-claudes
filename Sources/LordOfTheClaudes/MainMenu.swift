@@ -65,7 +65,7 @@ final class MainMenu: NSObject {
         menu.addItem(.separator())
         menu.addItem(item("Cut", #selector(NSText.cut(_:)), "x"))
         menu.addItem(item("Copy", #selector(NSText.copy(_:)), "c"))
-        menu.addItem(item("Paste", #selector(NSText.paste(_:)), "v"))
+        menu.addItem(item("Paste", #selector(paste(_:)), "v", target: self))
         menu.addItem(item("Select All", #selector(NSText.selectAll(_:)), "a"))
         return menu
     }
@@ -90,6 +90,15 @@ final class MainMenu: NSObject {
         menu.addItem(.separator())
         menu.addItem(item("Bring All to Front", #selector(NSApplication.arrangeInFront(_:))))
         return menu
+    }
+
+    /// Images go to the main window's message being written; anything else is pasted as usual.
+    @objc private func paste(_ sender: Any?) {
+        if window.window.isKeyWindow, PastedImages.holdsImages(NSPasteboard.general) {
+            model.menuPastes.send()
+        } else {
+            NSApp.sendAction(#selector(NSText.paste(_:)), to: nil, from: sender)
+        }
     }
 
     @objc private func newChat() { model.chat.newChat() }

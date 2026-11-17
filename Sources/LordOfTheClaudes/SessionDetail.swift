@@ -6,6 +6,7 @@ struct SessionDetail: View {
     let row: Row
     @ObservedObject var model: WindowModel
     var focus: FocusState<MainField?>.Binding
+    @State private var dropping = false
 
     private var place: String { SessionText.place(row, windowNames: model.windowNames) }
 
@@ -32,14 +33,16 @@ struct SessionDetail: View {
             if row.isLive {
                 VStack(alignment: .leading, spacing: 4) {
                     MessageBox(placeholder: "Send a prompt to this session", text: model.replyText(for: row.id),
-                               field: .reply(sessionId: row.id), focus: focus, label: "Prompt for \(row.title)",
-                               send: { model.sendReply(to: row) })
+                               images: model.replyImages(for: row.id), field: .reply(sessionId: row.id), focus: focus,
+                               label: "Prompt for \(row.title)", send: { model.sendReply(to: row) })
                     if let note = model.replyNotes[row.id] { SendNoteView(note: note) }
                 }
                 .readingColumn()
                 .padding(.top, 8).padding(.bottom, 12)
             }
         }
+        .modifier(ReplyDrops(takes: row.isLive, images: model.replyImages(for: row.id), dropping: $dropping))
+        .overlay { if dropping { DropHighlight() } }
     }
 
     private var header: some View {
@@ -153,6 +156,17 @@ struct SessionDetail: View {
             }
             .accessibilityElement(children: .combine)
         }
+    }
+}
+
+/// A running session takes dropped images into its reply; a closed one has nowhere to send them.
+private struct ReplyDrops: ViewModifier {
+    let takes: Bool
+    let images: Binding<[AttachedImage]>
+    @Binding var dropping: Bool
+
+    func body(content: Content) -> some View {
+        if takes { content.takesDroppedImages(into: images, isTargeted: $dropping) } else { content }
     }
 }
 

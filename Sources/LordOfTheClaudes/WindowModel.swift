@@ -26,6 +26,8 @@ final class WindowModel: ObservableObject {
     @Published var overlayOpen = false
     /// Reply text not sent yet, by session id.
     @Published var drafts: [String: String] = [:]
+    /// Images pasted or dropped into a reply, by session id.
+    @Published var replyAttachments: [String: [AttachedImage]] = [:]
     @Published var replyNotes: [String: SendNote] = [:]
     @Published var renaming: GroupRename?
     @Published var broadcast: BroadcastDraft?
@@ -41,6 +43,8 @@ final class WindowModel: ObservableObject {
 
     /// Where the keyboard should go next. Nil is the sidebar's list.
     let focusRequests = PassthroughSubject<MainField?, Never>()
+    /// Edit > Paste with images on the clipboard, for the field with the keyboard.
+    let menuPastes = PassthroughSubject<Void, Never>()
 
     static let sidebarWidths: ClosedRange<CGFloat> = 240...480
     /// Narrower than this, the sidebar opens over the main area.
@@ -207,14 +211,26 @@ final class WindowModel: ObservableObject {
                 })
     }
 
+    func replyImages(for id: String) -> Binding<[AttachedImage]> {
+        Binding(get: { self.replyAttachments[id, default: []] },
+                set: { images in
+                    if images != self.replyAttachments[id, default: []] { self.replyNotes[id] = nil }
+                    self.replyAttachments[id] = images.isEmpty ? nil : images
+                })
+    }
+
+    /// The words and images in a session's reply field, typed into its tab.
     func sendReply(to row: Row) {
         let text = drafts[row.id, default: ""].trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
+        let images = replyAttachments[row.id, default: []]
+        guard !text.isEmpty || !images.isEmpty else { return }
         drafts[row.id] = ""
+        replyAttachments[row.id] = nil
         replyNotes[row.id] = SendNote(outcome: .sending, text: "Sending...")
         Task {
-            let sent = await store.send(text, toSession: row.id)
+            let sent = await store.send(text, images: images, toSession: row.id)
             if !sent && drafts[row.id, default: ""].isEmpty { drafts[row.id] = text }  // give the words back
+            if !sent && replyAttachments[row.id] == nil && !images.isEmpty { replyAttachments[row.id] = images }
             replyNotes[row.id] = sent ? SendNote(outcome: .sent, text: "Sent.")
                                       : SendNote(outcome: .failed, text: "Could not find its tab. Nothing was sent.")
             announce(replyNotes[row.id])
@@ -332,6 +348,7 @@ final class WindowModel: ObservableObject {
             replyNotes = [:]
             groupNotes = [:]
             chat.windowShown()
+            chat.sweepAttachments(keeping: replyAttachments.values.flatMap { $0 })
         }
         if pane == .chat { focusRequests.send(.composer) }
     }

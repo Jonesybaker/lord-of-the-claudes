@@ -108,14 +108,14 @@ enum Ghostty {
         """) != nil
     }
 
-    /// Types a prompt into a terminal and submits it. Claude Code queues it if it is busy.
-    static func send(text: String, toTerminal terminalId: String) -> Bool {
+    /// Types a prompt into a terminal and submits it, `settle` seconds later. Claude Code queues it if it is busy.
+    static func send(text: String, toTerminal terminalId: String, settle: TimeInterval = 0.3) -> Bool {
         guard app != nil else { return false }
         return run("""
         tell application "Ghostty"
             set t to first terminal whose id is "\(escape(terminalId))"
             input text "\(escape(text))" to t
-            delay 0.3
+            delay \(String(format: "%.1f", settle))
             send key "enter" to t
         end tell
         """) != nil
@@ -143,10 +143,10 @@ enum Ghostty {
     }
 
     /// Opens a tab in the window, or the front one if it has gone, and starts Claude Code there with a prompt.
-    static func startClaude(prompt: String, cwd: String, inWindow windowId: String?) -> NewTab? {
+    /// `alsoReading` is a directory it may read without asking, as `--add-dir`.
+    static func startClaude(prompt: String, cwd: String, inWindow windowId: String?, alsoReading: String? = nil) -> NewTab? {
         guard app != nil else { return nil }
-        // One line for the shell; `--` so a prompt starting with "-" is not read as an option.
-        let command = "claude -- " + shellQuoted(prompt.split(whereSeparator: \.isNewline).joined(separator: " "))
+        let command = claudeCommand(prompt: prompt, alsoReading: alsoReading)
         let placed = run("""
         tell application "Ghostty"
             set cfg to new surface configuration
@@ -174,6 +174,12 @@ enum Ghostty {
         case "new": return .inNewWindow
         default: return nil
         }
+    }
+
+    /// One line for the shell; `--` so a prompt starting with "-" is not read as an option.
+    static func claudeCommand(prompt: String, alsoReading directory: String? = nil) -> String {
+        let flags = directory.map { "--add-dir \(shellQuoted($0)) " } ?? ""
+        return "claude \(flags)-- " + shellQuoted(prompt.split(whereSeparator: \.isNewline).joined(separator: " "))
     }
 
     /// Single quotes for any POSIX shell or fish: 'it'\''s'.
