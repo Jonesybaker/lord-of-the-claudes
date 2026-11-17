@@ -60,15 +60,16 @@ struct ChatView: View {
             if !model.sidebarVisible { SidebarButton(model: model) }
             Text("Overseer").font(.headline).accessibilityAddTraits(.isHeader)
             Spacer()
-            Button { chat.showingNeeds.toggle() } label: {
-                Label(chat.showingNeeds && !isEmpty ? "Back to the chat" : "What needs me",
-                      systemImage: chat.showingNeeds && !isEmpty ? "bubble.left.and.bubble.right" : "bell")
+            // An empty chat already shows what needs you and has nothing to clear.
+            if !isEmpty {
+                Button { chat.showingNeeds.toggle() } label: {
+                    Label(chat.showingNeeds ? "Back to the chat" : "What needs me",
+                          systemImage: chat.showingNeeds ? "bubble.left.and.bubble.right" : "bell")
+                }
+                .help("Every session waiting for you, longest first")
+                Button(action: chat.newChat) { Label("New chat", systemImage: "square.and.pencil") }
+                    .help("Clear the conversation and start a new one with the overseer")
             }
-            .disabled(isEmpty)
-            .help("Every session waiting for you, longest first")
-            Button(action: chat.newChat) { Label("New chat", systemImage: "square.and.pencil") }
-                .disabled(isEmpty)
-                .help("Clear the conversation and start a new one with the overseer")
         }
         .buttonStyle(.borderless)
         .padding(.horizontal, 16)
