@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import LotcKit
 import ServiceManagement
 
 /// A session we have seen running. Kept after it closes so it can be reopened.
@@ -21,6 +22,8 @@ struct Record: Codable {
     var isLord: Bool?
     /// The user folded its group away in the panel.
     var collapsed: Bool?
+    /// The observer's latest summary of the session.
+    var digest: Digest?
 }
 
 struct SavedState: Codable {
@@ -47,6 +50,7 @@ struct Row: Identifiable {
     /// 1-based place of its tab among the terminals of its window.
     var tab: Int? = nil
     var isLord = false
+    var digest: Digest? = nil
 
     var isLive: Bool { status != nil }
     var isStale: Bool { isLive && Date().timeIntervalSince(lastInteraction) > Self.staleAfter }
