@@ -22,6 +22,10 @@ public enum LotcCommand: Codable, Sendable, Equatable {
     case lord
     /// The PermissionRequest hook's stdin, passed through untouched for the app to read.
     case permission(hookInput: String)
+    /// Claude stopped in a session: the Stop hook, sent without waiting for an answer.
+    case observe(StopEvent)
+    /// The digests of one tab, the caller's window, or with `all` every window.
+    case digest(tab: String?, all: Bool)
 }
 
 /// The app's one-line answer to a request.
@@ -32,6 +36,9 @@ public enum LotcResponse: Codable, Sendable, Equatable {
     case message(LastMessage)
     case lord(group: String)
     case permission(PermissionAnswer)
+    /// Plain text meant to be read by a model.
+    case briefing(String)
+    case accepted
     case failure(String)
 }
 
@@ -57,11 +64,13 @@ public struct SessionSummary: Codable, Sendable, Equatable {
     public var isLord: Bool
     /// This is the session that ran `lotc`.
     public var isCaller: Bool
+    /// The observer's latest summary; nil until Claude has stopped once with the Stop hook installed.
+    public var digest: Digest?
 
     public var isWorking: Bool { status == "busy" }
 
     public init(tab: Int, title: String, sessionId: String, cwd: String, status: String,
-                waitingForYou: Bool, isLord: Bool, isCaller: Bool) {
+                waitingForYou: Bool, isLord: Bool, isCaller: Bool, digest: Digest? = nil) {
         self.tab = tab
         self.title = title
         self.sessionId = sessionId
@@ -70,6 +79,7 @@ public struct SessionSummary: Codable, Sendable, Equatable {
         self.waitingForYou = waitingForYou
         self.isLord = isLord
         self.isCaller = isCaller
+        self.digest = digest
     }
 }
 

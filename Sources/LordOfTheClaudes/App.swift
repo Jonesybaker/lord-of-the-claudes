@@ -23,8 +23,8 @@ struct MenuBarApp: App {
 }
 
 /// "now", "12m", "23h", "5d", "2w".
-func shortAge(_ date: Date) -> String {
-    let age = Date().timeIntervalSince(date)
+func shortAge(_ date: Date, now: Date = Date()) -> String {
+    let age = now.timeIntervalSince(date)
     switch age {
     case ..<60: return "now"
     case ..<3600: return "\(Int(age / 60))m"

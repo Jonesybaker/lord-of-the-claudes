@@ -24,6 +24,8 @@ struct Record: Codable {
     var collapsed: Bool?
     /// The observer's latest summary of the session.
     var digest: Digest?
+    /// Its digests as the work moved on, oldest first, the latest last. See `Digest.history`.
+    var digestHistory: [Digest]?
 }
 
 struct SavedState: Codable {
@@ -51,6 +53,8 @@ struct Row: Identifiable {
     var tab: Int? = nil
     var isLord = false
     var digest: Digest? = nil
+    /// Oldest first; the last is `digest`.
+    var digestHistory: [Digest] = []
 
     var isLive: Bool { status != nil }
     var isStale: Bool { isLive && Date().timeIntervalSince(lastInteraction) > Self.staleAfter }
@@ -66,6 +70,8 @@ final class Store: ObservableObject {
     @Published private(set) var automationBlocked = false
     @Published var autoRestore: Bool { didSet { if !isDemo { UserDefaults.standard.set(autoRestore, forKey: "autoRestore") } } }
     @Published var launchAtLogin: Bool { didSet { if !isDemo { applyLaunchAtLogin() } } }
+    /// The observer: each time Claude stops, Haiku sums the session up. Needs the Stop hook from `lotc hooks install`.
+    @Published var summarise: Bool { didSet { if !isDemo { UserDefaults.standard.set(summarise, forKey: "summarise") } } }
     /// Questions from `lotc permission` waiting in the permission window; kept up to date by LotcServer.
     @Published var permissionRequestCount = 0
     private var isDemo = false
@@ -89,6 +95,7 @@ final class Store: ObservableObject {
     private var polling = false
     private var poweringOff = false
     private let data = ClaudeData()
+    private var observer: Observer?
     /// Only the real store makes one: freeing a source never resumed traps, and a demo store is freed.
     private var toggleSignal: DispatchSourceSignal?
 
@@ -104,6 +111,7 @@ final class Store: ObservableObject {
     init(demoRows: [Row], groupNames: [String: String] = [:], collapsed: Set<String> = []) {
         autoRestore = true
         launchAtLogin = false
+        summarise = true
         isDemo = true
         rows = demoRows
         ghosttyRunning = true
@@ -117,7 +125,8 @@ final class Store: ObservableObject {
         state.records = demoRows.map { row in
             Record(id: row.id, cwd: row.cwd, title: row.title, lastSeen: Date(), lastInteraction: row.lastInteraction,
                    group: row.windowId.flatMap { groupNames[$0] }, isLord: row.isLord ? true : nil,
-                   collapsed: row.windowId.map(collapsed.contains) == true ? true : nil)
+                   collapsed: row.windowId.map(collapsed.contains) == true ? true : nil,
+                   digest: row.digest, digestHistory: row.digestHistory)
         }
     }
 
@@ -126,6 +135,7 @@ final class Store: ObservableObject {
         let firstRun = defaults.object(forKey: "autoRestore") == nil
         autoRestore = firstRun ? true : defaults.bool(forKey: "autoRestore")
         launchAtLogin = SMAppService.mainApp.status == .enabled
+        summarise = defaults.object(forKey: "summarise") == nil ? true : defaults.bool(forKey: "summarise")
         if firstRun {
             defaults.set(true, forKey: "autoRestore")
             launchAtLogin = true  // useless after a reboot unless it starts by itself
@@ -150,6 +160,9 @@ final class Store: ObservableObject {
         }
 
         HotKey.register { Panel.toggle() }
+        observer = Observer(summariser: ClaudeSummariser(), read: { Transcript.excerpt(of: $0) }) { [weak self] id, digest in
+            self?.record(digest, for: id)
+        }
         LotcServer.start(store: self)
 
         Task {
@@ -254,6 +267,11 @@ final class Store: ObservableObject {
         }
 
         pending.removeAll { live[$0] != nil }
+        rebuildRows()
+    }
+
+    /// The rows from the records and the last poll.
+    private func rebuildRows() {
         rows = state.records
             .map { record in
                 let session = live[record.id]
@@ -272,7 +290,8 @@ final class Store: ObservableObject {
                     lastInteraction: record.lastInteraction, needsYou: needsYou,
                     prompts: sessionHistory?.prompts ?? [],
                     ticket: Tickets.link(title: record.title) ?? sessionHistory?.link,
-                    windowId: terminal?.windowId, tab: tab, isLord: session != nil && record.isLord == true
+                    windowId: terminal?.windowId, tab: tab, isLord: session != nil && record.isLord == true,
+                    digest: record.digest, digestHistory: record.digestHistory ?? []
                 )
             }
             .sorted { ($0.needsYou ? 1 : 0, $0.lastInteraction) > ($1.needsYou ? 1 : 0, $1.lastInteraction) }
@@ -365,6 +384,40 @@ final class Store: ObservableObject {
     func window(ofSession sessionId: String) -> [Row] {
         guard let windowId = rows.first(where: { $0.id == sessionId })?.windowId else { return [] }
         return groups.first { $0.id == windowId }?.rows ?? []
+    }
+
+    // MARK: Observer
+
+    /// Claude has stopped in a session: the observer sums it up. Only sessions the panel tracks, so a
+    /// `claude -p` run by some script costs nothing.
+    func observe(_ event: StopEvent) {
+        guard summarise, let observer else { return }
+        let known = { [weak self] in self?.state.records.contains { $0.id == event.sessionId } == true }
+        if known() {
+            observer.stopped(event)
+        } else {
+            // A new session's first stop can come before the poll that finds it.
+            Task {
+                try? await Task.sleep(for: .seconds(6))
+                if known() { observer.stopped(event) }
+            }
+        }
+    }
+
+    private func record(_ digest: Digest, for sessionId: String) {
+        guard let index = state.records.firstIndex(where: { $0.id == sessionId }) else { return }
+        state.records[index].digest = digest
+        state.records[index].digestHistory = Digest.history(state.records[index].digestHistory ?? [], adding: digest)
+        save()
+        rebuildRows()
+    }
+
+    /// Every running session's digest, window by window, as plain text for a model: `lotc digest --all`.
+    func digestBriefing() -> String {
+        let windows = groups.map { DigestBriefing.Group(name: $0.name, rows: $0.rows) }
+        let placed = Set(windows.flatMap { $0.rows.map(\.id) })
+        let other = rows.filter { $0.isLive && !placed.contains($0.id) }
+        return DigestBriefing.text(windows + [DigestBriefing.Group(name: "Other", rows: other)])
     }
 
     // MARK: Prompts

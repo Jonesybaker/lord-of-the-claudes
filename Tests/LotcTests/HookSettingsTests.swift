@@ -4,10 +4,12 @@ import Testing
 @testable import lotc
 
 struct HookSettingsTests {
-    let command = "/opt/homebrew/bin/lotc permission"
+    let lotc = "/opt/homebrew/bin/lotc"
+    var permission: HookSettings.Installed { .init(hook: .permission, command: lotc + " permission", timeout: 600) }
+    var observe: HookSettings.Installed { .init(hook: .observe, command: lotc + " observe", timeout: nil) }
 
-    @Test func installsIntoEmptySettingsInTheDocumentedShape() throws {
-        let installed = HookSettings.installing(command, into: .object([]))
+    @Test func installsBothHooksIntoEmptySettingsInTheDocumentedShape() throws {
+        let installed = HookSettings.installing(lotcAt: lotc, into: .object([]))
         #expect(installed.formatted() == """
             {
               "hooks": {
@@ -22,6 +24,17 @@ struct HookSettingsTests {
                       }
                     ]
                   }
+                ],
+                "Stop": [
+                  {
+                    "hooks": [
+                      {
+                        "type": "command",
+                        "command": "/opt/homebrew/bin/lotc observe",
+                        "async": true
+                      }
+                    ]
+                  }
                 ]
               }
             }
@@ -33,38 +46,54 @@ struct HookSettingsTests {
             {"model":"opus","hooks":{"Stop":[{"hooks":[{"type":"command","command":"stop.sh"}]}],
              "PermissionRequest":[{"matcher":"Bash","hooks":[{"type":"command","command":"guard.sh"}]}]},"theme":"dark"}
             """)
-        let after = HookSettings.installing(command, into: before)
+        let after = HookSettings.installing(lotcAt: lotc, into: before)
         #expect(after.members?.map(\.key) == ["model", "hooks", "theme"])
         #expect(after["hooks"]?.members?.map(\.key) == ["Stop", "PermissionRequest"])
-        #expect(after["hooks"]?["Stop"] == before["hooks"]?["Stop"])
-        let groups = after["hooks"]?["PermissionRequest"]?.array ?? []
-        #expect(groups.count == 2)
-        #expect(groups.first == before["hooks"]?["PermissionRequest"]?.array?.first)
-        #expect(HookSettings.installed(in: after) == [.init(command: command, timeout: 600)])
+        for event in ["Stop", "PermissionRequest"] {
+            let groups = after["hooks"]?[event]?.array ?? []
+            #expect(groups.count == 2)
+            #expect(groups.first == before["hooks"]?[event]?.array?.first)
+        }
+        #expect(HookSettings.installed(in: after) == [permission, observe])
+    }
+
+    @Test func installAddsOnlyTheHookThatIsMissing() throws {
+        // As an earlier lotc left it: the permission hook alone, which must stay exactly as it was.
+        let before = try JSONValue(parsing: """
+            {"hooks":{"PermissionRequest":[{"matcher":"*","hooks":[
+              {"type":"command","command":"/opt/homebrew/bin/lotc permission","timeout":600},
+              {"type":"command","command":"notify.sh"}]}]}}
+            """)
+        let after = HookSettings.installing(lotcAt: lotc, into: before)
+        #expect(after["hooks"]?["PermissionRequest"] == before["hooks"]?["PermissionRequest"])
+        #expect(HookSettings.installed(in: after) == [permission, observe])
     }
 
     @Test func installTwiceChangesNothing() {
-        let once = HookSettings.installing(command, into: .object([]))
-        #expect(HookSettings.installing(command, into: once) == once)
+        let once = HookSettings.installing(lotcAt: lotc, into: .object([]))
+        #expect(HookSettings.installing(lotcAt: lotc, into: once) == once)
     }
 
-    @Test func installReplacesAHookLeftByALotcElsewhere() throws {
-        let stale = HookSettings.installing("/old/place/lotc permission", into: .object([]))
-        let fresh = HookSettings.installing(command, into: stale)
-        #expect(HookSettings.installed(in: fresh) == [.init(command: command, timeout: 600)])
+    @Test func installReplacesHooksLeftByALotcElsewhere() throws {
+        let stale = HookSettings.installing(lotcAt: "/old/place/lotc", into: .object([]))
+        let fresh = HookSettings.installing(lotcAt: lotc, into: stale)
+        #expect(HookSettings.installed(in: fresh) == [permission, observe])
     }
 
-    @Test func uninstallRemovesOnlyLotcAndTidiesEmptyContainers() throws {
+    @Test func uninstallRemovesBothAndOnlyLotcsAndTidiesEmptyContainers() throws {
         let shared = try JSONValue(parsing: """
             {"hooks":{"PermissionRequest":[{"matcher":"*","hooks":[
               {"type":"command","command":"/opt/homebrew/bin/lotc permission"},
-              {"type":"command","command":"notify.sh"}]}]}}
+              {"type":"command","command":"notify.sh"}]}],
+             "Stop":[{"hooks":[{"type":"command","command":"/opt/homebrew/bin/lotc observe","async":true}]},
+                     {"hooks":[{"type":"command","command":"say done"}]}]}}
             """)
         #expect(HookSettings.uninstalling(from: shared) == (try JSONValue(parsing: """
-            {"hooks":{"PermissionRequest":[{"matcher":"*","hooks":[{"type":"command","command":"notify.sh"}]}]}}
+            {"hooks":{"PermissionRequest":[{"matcher":"*","hooks":[{"type":"command","command":"notify.sh"}]}],
+             "Stop":[{"hooks":[{"type":"command","command":"say done"}]}]}}
             """)))
 
-        let onlyOurs = HookSettings.installing(command, into: try JSONValue(parsing: #"{"model":"opus"}"#))
+        let onlyOurs = HookSettings.installing(lotcAt: lotc, into: try JSONValue(parsing: #"{"model":"opus"}"#))
         #expect(HookSettings.uninstalling(from: onlyOurs) == (try JSONValue(parsing: #"{"model":"opus"}"#)))
     }
 
@@ -73,17 +102,60 @@ struct HookSettingsTests {
         #expect(HookSettings.uninstalling(from: settings) == settings)
     }
 
-    @Test func quotesAPathWithSpacesForTheShellAndReadsItBack() {
-        let path = "/Applications/Lord of the Claudes.app/Contents/MacOS/lotc"
-        let command = HookSettings.command(forExecutable: path)
-        #expect(command == "'/Applications/Lord of the Claudes.app/Contents/MacOS/lotc' permission")
-        #expect(HookSettings.lotcPath(inCommand: command) == path)
-        #expect(HookSettings.command(forExecutable: "/opt/homebrew/bin/lotc") == "/opt/homebrew/bin/lotc permission")
+    @Test func statusNamesEachHookInstalledOrNot() throws {
+        let neither = HookSettings.uninstalling(from: HookSettings.installing(lotcAt: "/nowhere/lotc", into: .object([])))
+        #expect(HookCommand.status(of: neither, in: "~/.claude/settings.json") == """
+            The permission hook is not installed in ~/.claude/settings.json.
+            The observer hook is not installed in ~/.claude/settings.json.
+            """)
+        let both = HookSettings.installing(lotcAt: "/nowhere/lotc", into: .object([]))
+        #expect(HookCommand.status(of: both, in: "~/s.json") == """
+            The permission hook is installed in ~/s.json: /nowhere/lotc permission (timeout 600s)
+              but /nowhere/lotc does not exist; run lotc hooks install again.
+            The observer hook is installed in ~/s.json: /nowhere/lotc observe
+              but /nowhere/lotc does not exist; run lotc hooks install again.
+            """)
     }
 
-    @Test(arguments: ["notify.sh", "lotc", "/bin/other permission", "/x/lotc list", "/x/notlotc permission"])
-    func doesNotMistakeOtherHooksForLotc(_ command: String) {
-        #expect(HookSettings.lotcPath(inCommand: command) == nil)
+    @Test func installStatusAndUninstallRoundTripAFile() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("lotc-hooks-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let url = dir.appendingPathComponent("settings.json")
+        let original = "{\n  \"model\": \"opus\"\n}\n"
+        try Data(original.utf8).write(to: url)
+        let fake = dir.appendingPathComponent("lotc").path
+
+        #expect(HookCommand.run(.status, settingsURL: url, lotcPath: fake) == 1)
+        #expect(HookCommand.run(.install, settingsURL: url, lotcPath: fake) == 0)
+        let installed = try SettingsFile(url: url).read()
+        #expect(Set(HookSettings.installed(in: installed).map(\.hook)) == [.permission, .observe])
+        #expect(HookCommand.run(.install, settingsURL: url, lotcPath: fake) == 0)
+        #expect(try SettingsFile(url: url).read() == installed)
+        #expect(HookCommand.run(.status, settingsURL: url, lotcPath: fake) == 0)
+        #expect(HookCommand.run(.uninstall, settingsURL: url, lotcPath: fake) == 0)
+        #expect(try String(contentsOf: url, encoding: .utf8) == original)
+    }
+
+    @Test func quotesAPathWithSpacesForTheShellAndReadsItBack() {
+        let path = "/Applications/Lord of the Claudes.app/Contents/MacOS/lotc"
+        for hook in LotcHook.allCases {
+            let command = HookSettings.command(forExecutable: path, hook)
+            #expect(command == "'/Applications/Lord of the Claudes.app/Contents/MacOS/lotc' \(hook.rawValue)")
+            #expect(HookSettings.lotcPath(inCommand: command, hook) == path)
+        }
+        #expect(HookSettings.command(forExecutable: "/opt/homebrew/bin/lotc", .observe) == "/opt/homebrew/bin/lotc observe")
+    }
+
+    @Test(arguments: ["notify.sh", "lotc", "/bin/other permission", "/x/lotc list", "/x/notlotc permission",
+                      "/x/lotc observe"])
+    func doesNotMistakeOtherHooksForLotcsPermissionHook(_ command: String) {
+        #expect(HookSettings.lotcPath(inCommand: command, .permission) == nil)
+    }
+
+    @Test func tellsItsTwoHooksApart() {
+        #expect(HookSettings.lotcPath(inCommand: "/x/lotc observe", .observe) == "/x/lotc")
+        #expect(HookSettings.lotcPath(inCommand: "/x/lotc permission", .observe) == nil)
     }
 
     @Test func writesThroughASymlinkKeepingABackupAndThePermissions() throws {
@@ -100,11 +172,11 @@ struct HookSettingsTests {
         try FileManager.default.createSymbolicLink(at: link, withDestinationURL: real)
 
         let file = SettingsFile(url: link)
-        let backup = try file.write(HookSettings.installing(command, into: try file.read()))
+        let backup = try file.write(HookSettings.installing(lotcAt: "/opt/homebrew/bin/lotc", into: try file.read()))
 
         #expect(try FileManager.default.destinationOfSymbolicLink(atPath: link.path) == real.path)
         #expect(try String(contentsOf: backup!, encoding: .utf8) == "{\n  \"model\": \"opus\"\n}\n")
-        #expect(HookSettings.installed(in: try file.read()).count == 1)
+        #expect(HookSettings.installed(in: try file.read()).count == 2)
         let permissions = try FileManager.default.attributesOfItem(atPath: real.path)[.posixPermissions] as? NSNumber
         #expect(permissions?.intValue == 0o600)
     }

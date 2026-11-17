@@ -1,6 +1,6 @@
 # Lord of the Claudes
 
-One panel to rule them all. A macOS menu bar app that tracks every Claude Code session open in Ghostty, tells you which ones are waiting for you, lets you prompt them and answer their permission prompts in one place, and brings them all back after a reboot. Its overseer answers "what needs me?" and puts your prompts in the right tab.
+One panel to rule them all. A macOS menu bar app that tracks every Claude Code session open in Ghostty, tells you which ones are waiting for you and what each is doing, lets you prompt them and answer their permission prompts in one place, and brings them all back after a reboot. Its overseer answers "what needs me?" and puts your prompts in the right tab.
 
 <p align="center">
   <img src="docs/panel-dark.png" width="460" alt="The panel: the overseer's box lists three sessions waiting for you, longest first, above three Ghostty windows, one folded away">
@@ -10,17 +10,18 @@ One panel to rule them all. A macOS menu bar app that tracks every Claude Code s
 
 - **Has an overseer to ask.** The box at the top of the panel is a chat with it. Ask where things stand, or tell it what a session should do. See [Ask the overseer](#ask-the-overseer).
 - **Lists what needs you.** Every session waiting for you, across all windows, longest wait first, with what each is waiting for.
-- **Shows every session, grouped by Ghostty window.** Title, last prompt and time since you last spoke to it. Each window gets a header with how many are open and how many are waiting. Two windows in one project are told apart: "shop" and "shop 2".
+- **Shows every session, grouped by Ghostty window.** Title, what it is doing and time since you last spoke to it. Each window gets a header with how many are open and how many are waiting. Two windows in one project are told apart: "shop" and "shop 2".
 - **Folds a window away.** The chevron on a group hides its sessions and keeps its counts. Cmd+1 to Cmd+9 jump to a group, Cmd+Down and Cmd+Up to the next or previous one.
 - **Names your windows.** Click a group's name to rename it. Leave it empty to go back to the directory name.
 - **Replies without switching tabs.** Expand a session, type in "Send a prompt" and press Return. Cmd+R opens the field on the selected session.
 - **Prompts a whole window at once.** The megaphone on a group sends one prompt to every session in it. It asks once more, naming the count, before it sends.
 - **Answers permission prompts in one window.** Approve, deny, or tell Claude what to do instead.
+- **Sums up each session.** Each time Claude stops, Haiku writes three lines: what the session is for, where it has got to and what it is waiting on you for.
 - **Lets one session direct the rest.** A lord session runs `lotc` to prompt its siblings and read their answers.
 - **Flags the ones waiting for you.** A session that finishes work while its tab is out of sight gets a bell. Sessions reopened after a restart come back quiet. The menu bar shows the count as "2/7".
 - **Jumps to the tab.** Ctrl+Option+C opens the panel from anywhere. Return jumps to the selected session. Cmd+F filters.
 - **Reopens everything after a restart.** Quit Ghostty or reboot, and each session resumes in the tab it was in.
-- **Remembers closed sessions.** They stay under "Recently closed" for 14 days with a Reopen button. The last five show, the rest behind "Show all". Sessions in a temporary directory are forgotten once closed.
+- **Remembers closed sessions.** They stay under "Recently closed" for 14 days with a Reopen button and their last summary. The last five show, the rest behind "Show all". Sessions in a temporary directory are forgotten once closed.
 - **Links to the ticket.** A Jira key or Zendesk ticket number in the session title becomes a button.
 
 <p align="center">
@@ -48,12 +49,12 @@ On first run macOS asks to let it control Ghostty. Allow it.
 | --- | --- |
 | Ctrl+Option+C | Open or close the panel |
 | Type, then Return | Ask the overseer |
-| Cmd+F | Filter by title, directory or group |
+| Cmd+F | Filter by title, directory, group or summary |
 | Up, Down | Move |
 | Cmd+Down, Cmd+Up | Jump to the next or previous group |
 | Cmd+1 to Cmd+9 | Jump to that group. Its number is on its header |
 | Return, with nothing typed | Jump to the session, or reopen a closed one |
-| Right, Left, Tab, with nothing typed | Show or hide its recent prompts |
+| Right, Left, Tab, with nothing typed | Show or hide its summary and recent prompts |
 | Cmd+R | Reply to the selected session |
 | Esc | Cancel a proposal, leave a text field, or close |
 
@@ -63,7 +64,7 @@ On first run macOS asks to let it control Ghostty. Allow it.
 - Right-click a session and choose "Make lord of this group". The lord shows a crown.
 - Hover a running session for an X that ends it and closes its tab.
 - Sessions untouched for over a week get a "Close them" banner.
-- "Reopen when Ghostty starts" off: the panel offers "Reopen all" instead.
+- "Reopen with Ghostty" off: the panel offers "Reopen all" instead.
 - `pkill -USR1 -x LordOfTheClaudes` toggles the panel from a script.
 
 ## Ask the overseer
@@ -95,6 +96,8 @@ What it sees and what it uses:
 
     lotc hooks install
 
+This adds two hooks to Claude Code: one for permission prompts, and one for the summaries below.
+
 When Claude Code would ask permission, a window comes to the front. It shows which session is asking, its directory and exactly what it wants to run or change. If several sessions ask at once, it shows them one at a time.
 
 | Key | Does |
@@ -106,7 +109,20 @@ When Claude Code would ask permission, a window comes to the front. It shows whi
 
 Plain Return never approves: the window takes focus while you may be typing somewhere else. Answer in the terminal and the question leaves the window by itself.
 
-If Lord of the Claudes is not running, Claude Code asks in the terminal as usual. `lotc hooks install` edits `~/.claude/settings.json`, leaves the rest of it as it was and keeps a backup beside it. `lotc hooks uninstall` takes the hook out again.
+If Lord of the Claudes is not running, Claude Code asks in the terminal as usual. `lotc hooks install` edits `~/.claude/settings.json`, leaves the rest of it as it was and keeps a backup beside it. Run it again after an upgrade to add a hook you do not have yet. `lotc hooks status` says which are in, and `lotc hooks uninstall` takes both out again.
+
+## Know what every session is doing
+
+<p align="center">
+  <img src="docs/panel-prompts.png" width="460" alt="An expanded session: its goal, where it has got to, what it is blocked on, and its earlier steps">
+</p>
+
+Each time Claude stops, Lord of the Claudes reads the end of that session's transcript and asks Haiku for three lines: the goal, where the work has got to, and what it is blocked on. A row shows what it is blocked on, else where it has got to. Expand it for all three, with the steps before behind "Earlier". The filter searches them, so a closed session can be found by what it did.
+
+- **It uses your own Claude Code login.** It runs `claude -p --model haiku`, so each summary counts towards your usage like any other Claude Code run: a few thousand tokens in, a few dozen out. One run per session at a time, two at most at once, and none when the transcript has not changed.
+- **What leaves your Mac.** The end of the transcript (its last 40 steps, up to 16,000 characters, with its title, directory and first prompt) goes to Anthropic, exactly as Claude Code itself sends it. The summary comes back and is kept only in the app's state file. The summariser runs with no tools, no hooks, no MCP servers, no CLAUDE.md and no saved session.
+- **Turning it off.** Untick "Summaries" at the foot of the panel, or `lotc hooks uninstall` to take out both hooks.
+- **Needs `claude`.** It looks on your PATH, where the installers put it, and on your login shell's PATH.
 
 ## Let sessions work together: `lotc`
 
@@ -114,12 +130,13 @@ If Lord of the Claudes is not running, Claude Code asks in the terminal as usual
 
 | Command | Does |
 | --- | --- |
-| `lotc list` | The sessions in this window: tab, working or idle, waiting for you, lord, title. `--json` for scripts |
+| `lotc list` | The sessions in this window: tab, working or idle, waiting for you, lord, title, and what each is doing. `--json` for scripts, with each summary in full |
 | `lotc send 2 "run the tests"` | Types a prompt into tab 2 and submits it. A tab is its number or part of its title |
 | `lotc broadcast "pull main"` | Sends a prompt to every other tab in the window |
 | `lotc wait 2` | Waits until tab 2 has finished what it was last sent, then prints its answer |
 | `lotc last 2` | Prints tab 2's last answer now |
 | `lotc lord` | Makes this session the lord of its window |
+| `lotc digest` | Each session's goal, state and what it is blocked on, as plain text for a model. A tab for one session, `--all` for every window |
 
 `wait` gives up after 110 seconds, inside Claude Code's two-minute Bash limit. Run it again to keep waiting, or pass `--timeout`. A prompt of `-` is read from stdin. Lord of the Claudes must be running.
 
@@ -138,19 +155,20 @@ Links pasted into a session are picked up by themselves. To turn a Jira key or t
 - It drives Ghostty through AppleScript. Tabs are matched to sessions by title. A new session's tab reads "Claude Code" until Claude names it, so it is matched by directory instead, when it is the only such session and tab there. It never guesses: a session it cannot place shows under "Other".
 - Replies and broadcasts are typed into the tab through AppleScript, as if you had typed them.
 - `lotc` talks to the app over a Unix socket only you can open: `~/Library/Application Support/LordOfTheClaudes/lotc.sock`. It finds its session by walking up its parent processes to one listed in `~/.claude/sessions`.
-- It only reads Claude's files, except that `lotc hooks install` adds one hook to `~/.claude/settings.json`. Its own state is `~/Library/Application Support/LordOfTheClaudes/state.json`, with `overseer.json` and `overseer-settings.json` beside it.
+- It only reads Claude's files, except that `lotc hooks install` adds two hooks to `~/.claude/settings.json`. Its own state, summaries included, is `~/Library/Application Support/LordOfTheClaudes/state.json`, with `overseer.json` and `overseer-settings.json` beside it.
 - The overseer's conversation is an ordinary Claude Code session in `~/Library/Application Support/LordOfTheClaudes/overseer`. It is never listed in the panel, and runs with `LOTC_OBSERVER=1` so `lotc`'s own hooks leave it alone.
-- The app has no network code. What you ask the overseer goes to Anthropic through `claude -p`, with the briefing. Nothing else leaves your Mac.
+- The app has no network code. The summariser's `claude -p` runs and what you ask the overseer, with the briefing, go to Anthropic through Claude Code. Nothing else leaves your Mac.
 
 ## Expect breakage
 
-Claude Code's session files are undocumented and can change in any release. Tested with Claude Code 2.1.322, Ghostty 1.3.1 and macOS 26. The overseer was tested with Claude Code 2.1.326 and needs its `--safe-mode`. If a new version breaks it, open an issue.
+Claude Code's session files are undocumented and can change in any release. Tested with Claude Code 2.1.326, Ghostty 1.3.1 and macOS 26. The summariser and the overseer need its `--safe-mode`. If a new version breaks it, open an issue.
 
 ## Development
 
 - `./build.sh test` runs the tests.
 - `LOTC_WINDOW_TESTS=1 ./build.sh test` also opens the permission window.
 - To try `lotc` beside an installed copy, run the build with `LOTC_SANDBOX=1 LOTC_SOCKET=<path>`. That turns off the hotkey and state.json, and keeps the overseer's files in a temporary folder. Set the same `LOTC_SOCKET` for `lotc`.
+- `.build/debug/LordOfTheClaudes --summarise <transcript.jsonl>` runs the summariser once on a transcript and prints what it wrote.
 
 ## Screenshots
 

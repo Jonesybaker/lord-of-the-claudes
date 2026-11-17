@@ -89,19 +89,26 @@ struct PanelView: View {
     @State private var broadcast: BroadcastDraft?
     /// Broadcast results, by window id.
     @State private var groupNotes: [String: SendNote] = [:]
+    /// Sessions whose earlier digests are on show.
+    @State private var historyOpen: Set<String>
 
-    /// The screenshots start it with rows expanded, a reply typed or a broadcast awaiting its confirm.
+    /// The screenshots start it with rows expanded, a reply typed, a broadcast awaiting its confirm or a history open.
     init(store: Store, chat: OverseerChat? = nil, expanded: Set<String> = [], drafts: [String: String] = [:],
-         broadcast: BroadcastDraft? = nil) {
+         broadcast: BroadcastDraft? = nil, historyOpen: Set<String> = []) {
         self.store = store
         self.chat = chat ?? .shared
         _expanded = State(initialValue: expanded)
         _drafts = State(initialValue: drafts)
         _broadcast = State(initialValue: broadcast)
+        _historyOpen = State(initialValue: historyOpen)
     }
 
+    /// A closed session stays findable by what it did: its digests are searched too.
     private func matches(_ row: Row, groupName: String = "") -> Bool {
-        query.isEmpty || [row.title, row.cwd, groupName].contains { $0.localizedCaseInsensitiveContains(query) }
+        guard !query.isEmpty else { return true }
+        let digests = row.digestHistory + (row.digest.map { [$0] } ?? [])
+        let words = [row.title, row.cwd, groupName] + digests.flatMap { [$0.goal, $0.state, $0.blockedOn ?? ""] }
+        return words.contains { $0.localizedCaseInsensitiveContains(query) }
     }
 
     /// Running sessions by Ghostty window in window order, then "Other".
@@ -437,6 +444,10 @@ struct PanelView: View {
             ),
             replyNote: replyNotes[row.id],
             sendReply: { sendReply(to: row) },
+            historyOpen: Binding(
+                get: { historyOpen.contains(row.id) },
+                set: { open in if open { historyOpen.insert(row.id) } else { historyOpen.remove(row.id) } }
+            ),
             focus: $focus
         )
     }
@@ -561,8 +572,12 @@ struct PanelView: View {
 
     private var footer: some View {
         HStack(spacing: 14) {
-            Toggle("Reopen when Ghostty starts", isOn: $store.autoRestore)
-            Toggle("Launch at login", isOn: $store.launchAtLogin)
+            // Short labels: the footer holds three settings on one line.
+            Toggle("Reopen with Ghostty", isOn: $store.autoRestore).fixedSize()
+                .help("When Ghostty starts, reopen the sessions that were open when it last closed.")
+            Toggle("Launch at login", isOn: $store.launchAtLogin).fixedSize()
+            Toggle("Summaries", isOn: $store.summarise).fixedSize()
+                .help("Each time Claude stops, Haiku sums the session up in three lines. Needs lotc hooks install.")
             Spacer()
             Button("Quit") { NSApplication.shared.terminate(nil) }
         }
