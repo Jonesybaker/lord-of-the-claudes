@@ -39,9 +39,9 @@ enum ShellGet {
 
         static let curl = Tool(
             name: "curl",
-            short: ["s": .none, "S": .none, "L": .none, "f": .none, "I": .none,
+            short: ["s": .none, "S": .none, "f": .none, "I": .none,
                     "m": .number, "A": .anyText, "H": .header, "o": .output, "w": .writeOut, "X": .method],
-            long: ["--silent": .none, "--show-error": .none, "--location": .none, "--fail": .none, "--head": .none,
+            long: ["--silent": .none, "--show-error": .none, "--fail": .none, "--head": .none,
                    "--compressed": .none, "--max-time": .number, "--connect-timeout": .number, "--user-agent": .anyText,
                    "--header": .header, "--output": .output, "--write-out": .writeOut, "--request": .method])
 
@@ -51,7 +51,7 @@ enum ShellGet {
             long: ["--quiet": .none, "--server-response": .none, "--spider": .none, "--no-verbose": .none,
                    "--output-document": .output, "--timeout": .number, "--connect-timeout": .number,
                    "--user-agent": .anyText, "--header": .header],
-            exact: ["-nv"], longEquals: true)
+            exact: ["-nv", "--max-redirect=0"], longEquals: true)
     }
 
     static func check(_ args: [String], as tool: Tool) -> Verdict {
@@ -117,6 +117,10 @@ enum ShellGet {
             return .ask(urls.isEmpty ? "the command has no URL" : "the command fetches more than one URL")
         }
         if let problem = PublicURL.problem(with: urls[0]) { return .ask(problem) }
+        // A redirect could point at localhost after the URL passed its checks. curl follows none unless told to.
+        if tool.name == "wget", !args.contains("--max-redirect=0") {
+            return .ask("wget follows redirects unless given --max-redirect=0")
+        }
         if tool.name == "wget", outputs.isEmpty, !spider {
             return .ask("wget saves the page to a file unless given -O - or -O /dev/null")
         }
