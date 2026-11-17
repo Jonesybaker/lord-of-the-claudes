@@ -23,6 +23,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.applicationIconImage = AppIcon.make()
         store = Store()
         let model = WindowModel(store: store, chat: .shared)
+        model.chat.sweepAttachments()
         window = MainWindow(model: model)
         statusItem = StatusItem(store: store, toggle: { [weak self] in self?.window.toggle() },
                                 show: { [weak self] in self?.window.show() })

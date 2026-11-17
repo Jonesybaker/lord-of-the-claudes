@@ -10,6 +10,7 @@ One window to rule them all. A macOS app in the menu bar that tracks every Claud
 
 - **Is a proper window.** Resize it, tile it, take it full screen. Ctrl+Option+C or the menu bar icon brings it to the front and hides it again. Closing it leaves the app in the menu bar. While it shows, the app is in the Dock and Cmd+Tab.
 - **Has an overseer to talk to.** The main area is a chat with it. Ask where things stand, tell it what a session should do, or ask it to take you to one. See [Ask the overseer](#ask-the-overseer).
+- **Takes screenshots.** Paste or drop images into a message. The overseer sees them, and a prompt it routes takes them to the session. See [Images](#images).
 - **Lists what needs you.** Every session waiting for you, across all windows, longest wait first, with what each is waiting for.
 - **Groups sessions by topic.** The observer files each session under what it is about, "Checkout", "Holiday", "Tax", so a window full of unrelated work sorts itself out. Or group by Ghostty window instead. See [Topics](#topics).
 - **Shows a session in full.** Click one in the sidebar for its place, its summary, what it did before and its recent prompts, with Go to tab, Make lord and Close.
@@ -53,6 +54,7 @@ On first run macOS asks to let it control Ghostty. Allow it.
 | Ctrl+Option+C | Bring the window to the front, or hide it when it is in front |
 | Type, then Return | Ask the overseer |
 | Shift+Return | A new line in the message |
+| Cmd+V, with an image copied | Attach it to the message |
 | Cmd+L | Back to the overseer, with the keyboard in its box |
 | Cmd+0 | Show or hide the sidebar |
 | Cmd+F | Filter by title, directory, group, topic or summary |
@@ -104,7 +106,7 @@ The overseer is a Claude Code conversation the app runs for you. Type in the box
 What it sees and what it uses:
 
 - It runs `claude -p` on your own Claude Code login, so it counts towards your plan like any other session. An answer takes a few seconds.
-- It sees a short briefing with each message, not transcripts: every open session's group, tab, title, directory, status and digest, or its last prompt when there is no digest. It has no tools, hooks, MCP servers or CLAUDE.md (`--safe-mode`), so it cannot read a file or run anything.
+- It sees a short briefing with each message, not transcripts: every open session's group, tab, title, directory, status and digest, or its last prompt when there is no digest. It has no tools, hooks, MCP servers or CLAUDE.md (`--safe-mode`), so it cannot read a file or run anything. Images you attach go with the message.
 - The chat is kept in `overseer.json` beside `state.json`, up to 60 messages. New chat starts a fresh conversation.
 - Claude Code keeps the instructions a conversation started with. When an upgrade changes the overseer's, the next question starts a fresh conversation and hands it the chat's last 20 messages, so you are never left on the old ones.
 - To change the model, edit `~/Library/Application Support/LordOfTheClaudes/overseer-settings.json`:
@@ -112,6 +114,20 @@ What it sees and what it uses:
       {"effort": "low", "model": "sonnet"}
 
   `model` takes any alias or model name Claude Code does, `effort` any of its `--effort` levels. If the app cannot find `claude`, add `"claude": "/path/to/claude"`.
+
+## Images
+
+<p align="center">
+  <img src="docs/window-image.png" width="820" alt="A screenshot of an invoice pasted into a message, and the overseer proposing to send it to the invoice session, the image listed on the card">
+</p>
+
+Paste a screenshot with Cmd+V, or drop image files on the chat, and it goes with your message. A copied image, an image file copied in Finder and a screenshot all work. Text pastes as before.
+
+- **Up to five a message.** Each shows above the words with a button to take it off. Anything over 2,000 pixels across is scaled down.
+- **The overseer sees them.** It answers about them like any other question.
+- **They go where the prompt goes.** When the overseer proposes a prompt from a message with images, the card lists them. Take any off before Send. The prompt is typed into the tab with each image's path on a line after it, which Claude Code takes as the image, as when you drop a file on its tab. A new session is started with the paths in its prompt and leave to read the images folder (`--add-dir`).
+- **Replies too.** Paste or drop images into a session's "Send a prompt" box, or into a card's prompt.
+- **Where they live.** `~/Library/Application Support/LordOfTheClaudes/attachments`, named by their content. The chat remembers each message's images. An image is deleted once no saved message has it and it is a week old, so a session sent one has time to read it.
 
 ## Answer permission prompts in one place
 
@@ -237,13 +253,13 @@ Links pasted into a session are picked up by themselves. To turn a Jira key or t
 - It drives Ghostty through AppleScript. Tabs are matched to sessions by title. A new session's tab reads "Claude Code" until Claude names it, so it is matched by directory instead, when it is the only such session and tab there. It never guesses: a session it cannot place shows under "Other" when grouped by window.
 - Replies and broadcasts are typed into the tab through AppleScript, as if you had typed them.
 - `lotc` talks to the app over a Unix socket only you can open: `~/Library/Application Support/LordOfTheClaudes/lotc.sock`. It finds its session by walking up its parent processes to one listed in `~/.claude/sessions`.
-- It only reads Claude's files, except that `lotc hooks install` adds two hooks to `~/.claude/settings.json`. Its own state, summaries and topics included, is `~/Library/Application Support/LordOfTheClaudes/state.json`, with `overseer.json`, `overseer-settings.json`, `auto-approve.json` and `auto-approve-log.json` beside it.
+- It only reads Claude's files, except that `lotc hooks install` adds two hooks to `~/.claude/settings.json`. Its own state, summaries and topics included, is `~/Library/Application Support/LordOfTheClaudes/state.json`, with `overseer.json`, `overseer-settings.json`, `auto-approve.json`, `auto-approve-log.json` and the `attachments` folder beside it.
 - The overseer's conversation is an ordinary Claude Code session in `~/Library/Application Support/LordOfTheClaudes/overseer`. It is never listed in the sidebar, and runs with `LOTC_OBSERVER=1` so `lotc`'s own hooks leave it alone.
-- The app has no network code. The summariser's `claude -p` runs and what you ask the overseer, with the briefing, go to Anthropic through Claude Code. Nothing else leaves your Mac.
+- The app has no network code. The summariser's `claude -p` runs and what you ask the overseer, with the briefing and any images, go to Anthropic through Claude Code. Nothing else leaves your Mac.
 
 ## Expect breakage
 
-Claude Code's session files are undocumented and can change in any release. Tested with Claude Code 2.1.326, Ghostty 1.3.1 and macOS 26. The summariser and the overseer need its `--safe-mode`. If a new version breaks it, open an issue.
+Claude Code's session files are undocumented and can change in any release. Tested with Claude Code 2.1.326, Ghostty 1.3.1 and macOS 26. The summariser and the overseer need its `--safe-mode`. Images sent to a tab rely on it taking a pasted image path as the image. If a new version breaks it, open an issue.
 
 ## Development
 
@@ -253,6 +269,7 @@ Claude Code's session files are undocumented and can change in any release. Test
 - To try `lotc` beside an installed copy, run the build with `LOTC_SANDBOX=1 LOTC_SOCKET=<path>`. That turns off the hotkey and state.json, and keeps the overseer's files in a temporary folder. Set the same `LOTC_SOCKET` for `lotc`.
 - `.build/debug/LordOfTheClaudes --summarise <transcript.jsonl>` runs the summariser once on a transcript and prints what it wrote.
 - `LOTC_SANDBOX=1 .build/debug/LordOfTheClaudes --ask <briefing.txt> "<question>"` asks the overseer once against a briefing in a file, in the shape `lotc digest --all` prints, and shows what it proposes. Nothing is kept.
+- `LOTC_SANDBOX=1 LOTC_CLAUDE_TESTS=1 ./build.sh test --filter LiveOverseerTests` sends made-up images to the real `claude -p` and carries the conversation on. It uses a little of your plan.
 
 ## Screenshots
 

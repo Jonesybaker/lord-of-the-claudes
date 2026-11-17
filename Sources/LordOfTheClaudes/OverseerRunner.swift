@@ -5,6 +5,8 @@ import Foundation
 struct OverseerRequest: Equatable, Sendable {
     /// The user's words with the briefing in front, sent on stdin.
     let message: String
+    /// Sent after the words, as image blocks in the same message.
+    var images: [AttachedImage] = []
     let systemPrompt: String
     /// Claude Code's id for the conversation.
     let sessionId: String
@@ -40,7 +42,7 @@ struct ClaudeCLI: OverseerRunning {
     static let timeout: TimeInterval = 180
 
     static func arguments(for request: OverseerRequest) -> [String] {
-        var args = ["-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages",
+        var args = ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--include-partial-messages",
                     "--model", request.settings.model, "--safe-mode", "--tools", "", "--disable-slash-commands",
                     "--system-prompt", request.systemPrompt]
         args += request.resume ? ["--resume", request.sessionId] : ["--session-id", request.sessionId]
@@ -84,8 +86,14 @@ struct ClaudeCLI: OverseerRunning {
         let errors = Task.detached { String(decoding: stderr.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self) }
         // A process that has already died would otherwise kill the app with SIGPIPE.
         _ = fcntl(stdin.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1)
-        try? stdin.fileHandleForWriting.write(contentsOf: Data(request.message.utf8))
-        try? stdin.fileHandleForWriting.close()
+        // An image whose file has gone is left out rather than stopping the question.
+        let images = request.images.compactMap { image in (try? Data(contentsOf: image.url)).map { (image.mediaType, $0) } }
+        let input = StreamInput.userMessage(request.message, images: images)
+        // Written from its own thread: a message with images can be more than the pipe holds before Claude Code reads it.
+        let writer = Task.detached {
+            try? stdin.fileHandleForWriting.write(contentsOf: input)
+            try? stdin.fileHandleForWriting.close()
+        }
         DispatchQueue.global().asyncAfter(deadline: .now() + timeout) { box.stop(timedOut: true) }
 
         var streamed = ""
@@ -110,6 +118,7 @@ struct ClaudeCLI: OverseerRunning {
             }
         }
         process.waitUntilExit()
+        await writer.value
         let errorText = await errors.value
         if let failure { throw failure }
         if box.timedOut { throw OverseerFailure.failed("No answer after \(Int(timeout)) seconds.") }
@@ -130,6 +139,20 @@ struct ClaudeCLI: OverseerRunning {
         env["LOTC_OBSERVER"] = "1"
         env["CLAUDECODE"] = nil  // set when the app was started from inside a Claude Code session
         return env
+    }
+}
+
+/// The turn as `claude -p --input-format stream-json` takes it on stdin: one user message, its words then its images.
+enum StreamInput {
+    static func userMessage(_ text: String, images: [(mediaType: String, data: Data)]) -> Data {
+        let blocks: [[String: Any]] = [["type": "text", "text": text]] + images.map { image in
+            ["type": "image", "source": ["type": "base64", "media_type": image.mediaType, "data": image.data.base64EncodedString()]]
+        }
+        let line: [String: Any] = ["type": "user", "message": ["role": "user", "content": blocks], "parent_tool_use_id": NSNull()]
+        // Strings and numbers only, so it cannot fail.
+        var data = (try? JSONSerialization.data(withJSONObject: line, options: [.withoutEscapingSlashes])) ?? Data()
+        data.append(0x0A)
+        return data
     }
 }
 

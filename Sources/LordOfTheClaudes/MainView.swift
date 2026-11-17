@@ -53,6 +53,10 @@ struct MainView: View {
             setFocus(.composer)
         }
         .onReceive(model.focusRequests) { setFocus($0) }
+        .onReceive(model.menuPastes) {
+            // A field that takes no images pastes as usual.
+            if !perform(.pasteImages, editor: nil) { NSApp.sendAction(#selector(NSText.paste(_:)), to: nil, from: nil) }
+        }
         .onChange(of: focus) { old, _ in
             // Clicking away from a group's name field cancels the rename, as Esc does.
             if case .rename(let id) = old, model.renaming?.groupId == id { model.renaming = nil }
@@ -161,9 +165,11 @@ struct MainView: View {
     private func handleKey(_ event: NSEvent) -> Bool {
         let editor = event.window?.firstResponder as? NSTextView
         let command = event.modifierFlags.contains(.command)
+        let pasting = command && event.charactersIgnoringModifiers?.lowercased() == "v"
         let context = MainKeys.Context(
-            focus: focus, composerEmpty: chat.draft.trimmedNonEmpty == nil, sidebarVisible: model.sidebarVisible,
-            cardWaiting: chat.card.map { $0.canSend && !$0.sending } == true, composing: editor?.hasMarkedText() == true)
+            focus: focus, composerEmpty: !chat.hasDraft, sidebarVisible: model.sidebarVisible,
+            cardWaiting: chat.card.map { $0.canSend && !$0.sending } == true, composing: editor?.hasMarkedText() == true,
+            imagesToPaste: pasting && PastedImages.holdsImages(NSPasteboard.general))
         let key = MainKeys.route(keyCode: Int(event.keyCode), modifiers: event.modifierFlags,
                                  characters: command ? event.charactersIgnoringModifiers : event.characters, in: context)
         return perform(key, editor: editor)
@@ -179,6 +185,9 @@ struct MainView: View {
             chat.submit(to: store)
         case .sendReply:
             if case .reply(let id) = focus, let row = store.rows.first(where: { $0.id == id }) { model.sendReply(to: row) }
+        case .pasteImages:
+            guard let images = imagesOfFocusedField, let sources = PastedImages.sources(from: .general) else { return false }
+            ImageIntake.attach(sources, to: images)
         case .newLine:
             editor?.insertNewlineIgnoringFieldEditor(nil)
         case .confirmCard:
@@ -216,6 +225,21 @@ struct MainView: View {
             model.showChat()
         }
         return true
+    }
+
+    /// Where a pasted image goes: the message being written where the keyboard is.
+    private var imagesOfFocusedField: Binding<[AttachedImage]>? {
+        switch focus {
+        case .composer:
+            return $chat.draftImages
+        case .proposal:
+            guard let id = chat.card?.id else { return nil }
+            return Binding(get: { chat.card?.images ?? [] }, set: { images in if chat.card?.id == id { chat.card?.images = images } })
+        case .reply(let id):
+            return model.replyImages(for: id)
+        default:
+            return nil
+        }
     }
 
     private var inSidebar: Bool {
