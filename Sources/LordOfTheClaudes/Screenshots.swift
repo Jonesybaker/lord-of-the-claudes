@@ -9,7 +9,8 @@ enum Screenshots {
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let store = Store(demoRows: demoRows(), groupNames: ["w1": "Shop", "w2": "Platform", "w3": "Docs"],
+        PanelHeights.screenOverride = 1400
+        let store = Store(demoRows: withDemoDigests(demoRows()), groupNames: ["w1": "Shop", "w2": "Platform", "w3": "Docs"],
                           collapsed: ["w3"])
         let shots = [
             Shot(name: "panel-dark", appearance: .darkAqua),
@@ -19,11 +20,13 @@ enum Screenshots {
                  drafts: ["1": "log the random seed on every run, then run it 50 times"]),
             Shot(name: "panel-broadcast", appearance: .darkAqua,
                  broadcast: BroadcastDraft(windowId: "w2", text: "rebase on main and run the tests", confirming: true)),
+            Shot(name: "panel-overseer", appearance: .darkAqua, chat: demoChat(places: store.overseerPlaces)),
         ]
         var windows: [(String, NSWindow)] = []
         for shot in shots {
-            let panel = PanelView(store: store, expanded: shot.expanded, drafts: shot.drafts, broadcast: shot.broadcast,
-                                  historyOpen: shot.historyOpen)
+            // Never the real chat: its conversation is the user's own.
+            let panel = PanelView(store: store, chat: shot.chat ?? OverseerChat(demo: []), expanded: shot.expanded,
+                                  drafts: shot.drafts, broadcast: shot.broadcast, historyOpen: shot.historyOpen)
             let host = NSHostingView(rootView: panel
                 .background(Color(nsColor: .windowBackgroundColor))
                 .clipShape(RoundedRectangle(cornerRadius: 12))
@@ -62,6 +65,7 @@ enum Screenshots {
         var expanded: Set<String> = []
         var drafts: [String: String] = [:]
         var broadcast: BroadcastDraft?
+        var chat: OverseerChat?
         var historyOpen: Set<String> = []
     }
 

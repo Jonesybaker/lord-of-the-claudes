@@ -26,7 +26,12 @@ enum DigestBriefing {
         let place = row.tab.map { "tab \($0)" } ?? "no tab"
         let cwd = row.cwd.hasPrefix(home + "/") ? "~" + row.cwd.dropFirst(home.count) : row.cwd
         var lines = ["\(place): \(row.title) [\(status.joined(separator: ", "))]", "  cwd: \(cwd)"]
-        guard let digest = row.digest else { return lines + ["  no digest yet"] }
+        guard let digest = row.digest else {
+            // Digests arrive at a session's next stop; until then its last prompt says most.
+            guard let prompt = row.prompts.last else { return lines + ["  no digest yet"] }
+            let text = prompt.text.split(whereSeparator: \.isNewline).joined(separator: " ")
+            return lines + ["  no digest yet; last prompt, \(ago(prompt.date, now: now)): \(text.prefix(300))"]
+        }
         lines += [
             "  goal: \(digest.goal)",
             "  state: \(digest.state)",

@@ -137,6 +137,50 @@ enum Ghostty {
         """) != nil
     }
 
+    /// Where `startClaude` opened its tab.
+    enum NewTab: Equatable {
+        case inItsWindow, inFrontWindow, inNewWindow
+    }
+
+    /// Opens a tab in the window, or the front one if it has gone, and starts Claude Code there with a prompt.
+    static func startClaude(prompt: String, cwd: String, inWindow windowId: String?) -> NewTab? {
+        guard app != nil else { return nil }
+        // One line for the shell; `--` so a prompt starting with "-" is not read as an option.
+        let command = "claude -- " + shellQuoted(prompt.split(whereSeparator: \.isNewline).joined(separator: " "))
+        let placed = run("""
+        tell application "Ghostty"
+            set cfg to new surface configuration
+            set initial working directory of cfg to "\(escape(cwd))"
+            set initial input of cfg to "\(escape(command))" & linefeed
+            set w to missing value
+            try
+                set w to first window whose id is "\(escape(windowId ?? ""))"
+            end try
+            if w is not missing value then
+                new tab in w with configuration cfg
+                return "window"
+            else if (count of windows) > 0 then
+                new tab in front window with configuration cfg
+                return "front"
+            else
+                new window with configuration cfg
+                return "new"
+            end if
+        end tell
+        """)
+        switch placed {
+        case "window": return .inItsWindow
+        case "front": return .inFrontWindow
+        case "new": return .inNewWindow
+        default: return nil
+        }
+    }
+
+    /// Single quotes for any POSIX shell or fish: 'it'\''s'.
+    static func shellQuoted(_ s: String) -> String {
+        "'" + s.replacingOccurrences(of: "'", with: #"'\''"#) + "'"
+    }
+
     private static func escape(_ s: String) -> String {
         s.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
     }

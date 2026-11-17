@@ -83,11 +83,12 @@ struct ObserverTests {
         for session in ["a", "b", "c"] { observer.stopped(stop(session, session)) }
         await until { summariser.holding == 2 }
         try? await Task.sleep(for: .milliseconds(30))
-        #expect(summariser.excerpts == ["a", "b"])
+        // The two runs start on separate threads, so either may reach the summariser first.
+        #expect(summariser.excerpts.sorted() == ["a", "b"])
 
         summariser.release()
         await until { summariser.excerpts.count == 3 }
-        #expect(summariser.excerpts == ["a", "b", "c"])
+        #expect(summariser.excerpts.last == "c")
         summariser.release()
         summariser.release()
         await until { observer.isIdle }
