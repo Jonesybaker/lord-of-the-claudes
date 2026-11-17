@@ -6,9 +6,13 @@ private struct ContentHeight: PreferenceKey {
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
 }
 
-/// Where the keyboard is in the panel. The arrows, Return and Tab move around the list only while
-/// it is on the filter; in a reply, broadcast or rename field they edit the text.
+/// Where the keyboard is in the panel. The arrows, Return and Tab move around the list while it is on
+/// the filter, and on the overseer's field as OverseerKeys says; in any other field they edit the text.
 enum PanelField: Hashable {
+    /// The chat with the overseer: where the keyboard starts, and goes back to.
+    case overseer
+    /// The prompt on the overseer's routing card.
+    case proposal
     case search
     case reply(sessionId: String)
     case broadcast(windowId: String)
@@ -68,6 +72,7 @@ struct GroupRename: Equatable {
 
 struct PanelView: View {
     @ObservedObject var store: Store
+    let chat: OverseerChat
     @State private var query = ""
     /// The highlighted row's id; nil means the first row.
     @State private var selection: String?
@@ -86,8 +91,10 @@ struct PanelView: View {
     @State private var groupNotes: [String: SendNote] = [:]
 
     /// The screenshots start it with rows expanded, a reply typed or a broadcast awaiting its confirm.
-    init(store: Store, expanded: Set<String> = [], drafts: [String: String] = [:], broadcast: BroadcastDraft? = nil) {
+    init(store: Store, chat: OverseerChat? = nil, expanded: Set<String> = [], drafts: [String: String] = [:],
+         broadcast: BroadcastDraft? = nil) {
         self.store = store
+        self.chat = chat ?? .shared
         _expanded = State(initialValue: expanded)
         _drafts = State(initialValue: drafts)
         _broadcast = State(initialValue: broadcast)
@@ -140,6 +147,8 @@ struct PanelView: View {
             header
             if store.automationBlocked { notice("Cannot talk to Ghostty. Allow Lord of the Claudes under System Settings > Privacy & Security > Automation.") }
             if !store.pending.isEmpty { pendingBanner }
+            OverseerView(chat: chat, store: store, focus: $focus, jump: activate)
+            Divider().padding(.bottom, 8)
             search
             Divider()
             list
@@ -150,7 +159,7 @@ struct PanelView: View {
         .frame(width: 460)
         .onAppear {
             keys.handler = handleKey
-            focusSearch()
+            focusHome()
         }
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { note in
             if (note.object as? NSWindow)?.className.contains("MenuBarExtraWindow") == true { resetForOpen() }
@@ -171,12 +180,13 @@ struct PanelView: View {
         broadcast?.confirming = false
         replyNotes = [:]
         groupNotes = [:]
-        focusSearch()
+        chat.panelOpened()
+        focusHome()
     }
 
-    private func focusSearch() {
+    private func focusHome() {
         // Focus only sticks once the window is key, which is a beat after it appears.
-        DispatchQueue.main.async { focus = .search }
+        DispatchQueue.main.async { focus = .overseer }
     }
 
     // MARK: Keys
@@ -190,7 +200,20 @@ struct PanelView: View {
             return true
         }
         // A reply, broadcast or rename field takes every other key, arrows and Return included.
-        if let focus, focus != .search { return false }
+        switch OverseerKeys.route(keyCode: keyCode, modifiers: event.modifierFlags, characters: event.charactersIgnoringModifiers,
+                                  focus: focus, chatIsEmpty: chat.draft.trimmedNonEmpty == nil) {
+        case .field: return false
+        case .list: break
+        case .focusFilter:
+            focus = .search
+            return true
+        case .confirmCard:
+            Task {
+                await chat.confirm(using: store, fromKeyboard: true)
+                if chat.card == nil { focus = .overseer }
+            }
+            return true
+        }
 
         if modifiers == .command && event.charactersIgnoringModifiers == "r" {
             if let row = selectedRow, row.isLive { startReply(to: row) }
@@ -223,17 +246,23 @@ struct PanelView: View {
     /// Steps back one level: out of a broadcast's confirm, then out of the field, then closes the panel.
     private func escape() {
         switch focus {
+        case .proposal:
+            chat.cancelCard()
+            focus = .overseer
+        case .search:
+            query = ""
+            focus = .overseer
         case .broadcast where broadcast?.confirming == true:
             broadcast?.confirming = false
         case .broadcast:
             broadcast = nil
-            focus = .search
+            focus = .overseer
         case .rename:
             renaming = nil
-            focus = .search
+            focus = .overseer
         case .reply:
-            focus = .search  // the draft stays for later
-        case .search, nil:
+            focus = .overseer  // the draft stays for later
+        case .overseer, nil:
             Panel.close()
         }
     }
@@ -282,7 +311,7 @@ struct PanelView: View {
         if !collapsed && query.isEmpty {
             // Neither the selection nor the keyboard may stay on a row going out of sight.
             let hiding = Set(group.shown.map(\.id))
-            if case .reply(let id) = focus, hiding.contains(id) { focus = .search }
+            if case .reply(let id) = focus, hiding.contains(id) { focus = .overseer }
             if let selected = selectedRow?.id, hiding.contains(selected) {
                 selection = SectionJump.survivor(of: selected, hiding: hiding, in: visible.map(\.id))
             }
@@ -325,14 +354,14 @@ struct PanelView: View {
         guard let renaming else { return }
         store.renameGroup(renaming.windowId, to: renaming.name)  // empty goes back to the usual name
         self.renaming = nil
-        focus = .search
+        focus = .overseer
     }
 
     private func toggleBroadcast(_ windowId: String) {
         groupNotes[windowId] = nil
         if broadcast?.windowId == windowId {
             broadcast = nil
-            focus = .search
+            focus = .overseer
         } else {
             broadcast = BroadcastDraft(windowId: windowId)
             DispatchQueue.main.async { focus = .broadcast(windowId: windowId) }
@@ -360,7 +389,7 @@ struct PanelView: View {
             }
             announce(groupNotes[draft.windowId])
             if broadcast?.windowId == draft.windowId { broadcast = nil }
-            if focus == .broadcast(windowId: draft.windowId) { focus = .search }
+            if focus == .broadcast(windowId: draft.windowId) { focus = .overseer }
         }
     }
 
@@ -386,7 +415,7 @@ struct PanelView: View {
     }
 
     private var search: some View {
-        TextField("Filter. Return jumps to the session, Right shows its prompts", text: $query)
+        TextField("Filter (⌘F). Return jumps to the session, Right shows its prompts", text: $query)
             .textFieldStyle(.roundedBorder)
             .focused($focus, equals: .search)
             .padding(.horizontal, 12).padding(.bottom, 8)
@@ -479,7 +508,7 @@ struct PanelView: View {
             }
             // A ScrollView has no intrinsic height and collapses to nothing in a menu bar window,
             // so size it to its content up to a cap.
-            .frame(height: min(540, max(listHeight, 30)))
+            .frame(height: min(PanelHeights.list, max(listHeight, 30)))
             .onPreferenceChange(ContentHeight.self) { listHeight = $0 }
             .onChange(of: selection) {
                 guard let selection else { return }

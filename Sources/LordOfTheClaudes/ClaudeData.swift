@@ -42,7 +42,9 @@ final class ClaudeData: @unchecked Sendable {
                   let pid = json["pid"] as? Int,
                   let sessionId = json["sessionId"] as? String, UUID(uuidString: sessionId) != nil,
                   let cwd = json["cwd"] as? String,
-                  (json["kind"] as? String ?? "interactive") == "interactive"
+                  (json["kind"] as? String ?? "interactive") == "interactive",
+                  // `claude -p` registers as interactive too; the overseer's would show if the app was started in Ghostty.
+                  !OverseerFiles.isOverseer(cwd: cwd)
             else { return nil }
             let startedAt = (json["startedAt"] as? Double).map { Date(timeIntervalSince1970: $0 / 1000) }
             guard ProcessTable.isSameProcess(pid_t(pid), startedAt: startedAt),
