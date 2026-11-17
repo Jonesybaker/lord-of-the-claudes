@@ -20,6 +20,8 @@ struct RoutingCard: Identifiable, Equatable {
     var prompt: String
     var shownAt = Date()
     var sending = false
+    /// Images that go with the prompt, as file paths at its end. The user's, from the message that asked for it.
+    var images: [AttachedImage] = []
 
     var isArmed: Bool { Date().timeIntervalSince(shownAt) >= Self.armingDelay }
 
@@ -107,6 +109,18 @@ struct RoutingCard: Identifiable, Equatable {
 
     static func == (a: RoutingCard, b: RoutingCard) -> Bool {
         a.id == b.id && a.kind == b.kind && a.prompt == b.prompt && a.shownAt == b.shownAt && a.sending == b.sending
+            && a.images == b.images
+    }
+}
+
+/// A card with a prompt takes dropped images; one without leaves them to the composer.
+private struct CardDrops: ViewModifier {
+    let takes: Bool
+    @Binding var images: [AttachedImage]
+    @Binding var dropping: Bool
+
+    func body(content: Content) -> some View {
+        if takes { content.takesDroppedImages(into: $images, isTargeted: $dropping) } else { content }
     }
 }
 
@@ -117,6 +131,7 @@ struct RoutingCardView: View {
     let cancel: () -> Void
     let choose: (SessionPlace) -> Void
     var focus: FocusState<MainField?>.Binding
+    @State private var dropping = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -132,7 +147,10 @@ struct RoutingCardView: View {
                 }
                 .buttonStyle(.bordered)
             }
-            if card.hasPrompt { prompt }
+            if card.hasPrompt {
+                prompt
+                if !card.images.isEmpty { images }
+            }
             HStack(spacing: 8) {
                 if card.sending {
                     ProgressView().controlSize(.small)
@@ -154,6 +172,8 @@ struct RoutingCardView: View {
         .padding(10)
         .background(RoundedRectangle(cornerRadius: 10).fill(Color.accentColor.opacity(0.1)))
         .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.accentColor.opacity(0.5)))
+        .modifier(CardDrops(takes: card.hasPrompt && !card.sending, images: $card.images, dropping: $dropping))
+        .overlay { if dropping { DropHighlight() } }
     }
 
     private var actionTitle: String {
@@ -199,8 +219,18 @@ struct RoutingCardView: View {
         }
     }
 
+    /// Exactly what goes with the prompt, to take off before sending.
+    private var images: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            AttachmentStrip(images: $card.images, editable: !card.sending)
+            Text(card.images.count == 1 ? "This image goes with it: its path is added at the end of the prompt."
+                                        : "These \(card.images.count) images go with it: their paths are added at the end of the prompt.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
     private var prompt: some View {
-        TextField("Prompt", text: $card.prompt, axis: .vertical)
+        TextField("Prompt", text: $card.prompt.takingImagePaths(into: $card.images), axis: .vertical)
             .textFieldStyle(.roundedBorder)
             .lineLimit(1...6)
             .focused(focus, equals: .proposal)

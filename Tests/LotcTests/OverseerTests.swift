@@ -195,19 +195,19 @@ private final class FakeRunner: OverseerRunning, @unchecked Sendable {
 @MainActor
 private final class FakeHost: OverseerHost {
     var overseerPlaces = places
-    private(set) var sent: [(text: String, sessionId: String)] = []
-    private(set) var started: [(prompt: String, cwd: String, windowId: String?)] = []
+    private(set) var sent: [(text: String, sessionId: String, images: [AttachedImage])] = []
+    private(set) var started: [(prompt: String, cwd: String, windowId: String?, images: [AttachedImage])] = []
     private(set) var wentTo: [String] = []
 
     func digestBriefing() -> String { "Group \"United\": ..." }
 
-    func send(_ text: String, toSession sessionId: String) async -> Bool {
-        sent.append((text, sessionId))
+    func send(_ text: String, images: [AttachedImage], toSession sessionId: String) async -> Bool {
+        sent.append((text, sessionId, images))
         return true
     }
 
-    func startSession(prompt: String, cwd: String, windowId: String?) async -> Ghostty.NewTab? {
-        started.append((prompt, cwd, windowId))
+    func startSession(prompt: String, images: [AttachedImage], cwd: String, windowId: String?) async -> Ghostty.NewTab? {
+        started.append((prompt, cwd, windowId, images))
         return .inItsWindow
     }
 
@@ -653,5 +653,117 @@ struct OverseerInstructionsTests {
         let json = #"{"sessionId": "x", "messages": [{"id": "6F9619FF-8B86-D011-B42D-00CF4FC964FF", "role": "user", "text": "hi", "at": 0}]}"#
         let conversation = try JSONDecoder().decode(OverseerConversation.self, from: Data(json.utf8))
         #expect(conversation.sessionId == "x" && conversation.instructions == nil && conversation.messages.count == 1)
+    }
+}
+
+/// Made-up attachments: the fakes never read them.
+private let screenshot = AttachedImage(path: "/tmp/lotc-test/attachments/0a1b.png")
+private let kitPhoto = AttachedImage(path: "/tmp/lotc-test/attachments/2c3d.jpg")
+
+@MainActor
+struct ImageGateTests {
+    private func ask(_ chat: OverseerChat, _ host: FakeHost, _ text: String, images: [AttachedImage] = []) async {
+        chat.draft = text
+        chat.draftImages = images
+        chat.submit(to: host)
+        await chat.settle()
+    }
+
+    @Test func imagesGoToTheOverseerThenWaitOnTheCardForSend() async throws {
+        let host = FakeHost()
+        let runner = FakeRunner([.success(sendToShop)])
+        let chat = OverseerChat(runner: runner, file: nil, settingsFile: nil)
+        await ask(chat, host, "tell the checkout one to fix this", images: [screenshot, kitPhoto])
+        #expect(runner.requests[0].images == [screenshot, kitPhoto])
+        #expect(chat.draftImages.isEmpty)
+        #expect(chat.conversation.messages[0].images == [screenshot, kitPhoto])
+        #expect(try #require(chat.card).images == [screenshot, kitPhoto])
+        #expect(host.sent.isEmpty)
+
+        await chat.confirm(using: host, fromKeyboard: true)  // a Return already on its way
+        #expect(host.sent.isEmpty)
+        chat.card?.images.removeAll { $0 == kitPhoto }  // taken off the card before sending
+        chat.card?.shownAt = .distantPast
+        await chat.confirm(using: host, fromKeyboard: true)
+        #expect(host.sent.map(\.text) == ["rebase on main"])
+        #expect(host.sent.map(\.images) == [[screenshot]])
+        #expect(chat.conversation.messages.last?.text == "Sent to Shop, tab 1 (Fix flaky checkout test), with an image.")
+    }
+
+    @Test func cancelSendsNoImages() async {
+        let host = FakeHost()
+        let chat = OverseerChat(runner: FakeRunner([.success(sendToShop)]), file: nil, settingsFile: nil)
+        await ask(chat, host, "send this to the checkout one", images: [screenshot])
+        chat.cancelCard()
+        await chat.confirm(using: host)
+        #expect(host.sent.isEmpty && host.started.isEmpty)
+    }
+
+    @Test func aNewSessionStartsWithTheImagesOnlyWhenConfirmed() async {
+        let host = FakeHost()
+        let reply = "A new one.\n```lotc\n{\"action\":\"new\",\"group\":\"Shop\",\"cwd\":\"/\",\"prompt\":\"build this size guide\"}\n```"
+        let chat = OverseerChat(runner: FakeRunner([.success(reply)]), file: nil, settingsFile: nil)
+        await ask(chat, host, "start something for this size guide", images: [kitPhoto])
+        #expect(host.started.isEmpty)
+        await chat.confirm(using: host)
+        #expect(host.started.map(\.images) == [[kitPhoto]])
+        #expect(host.started.map(\.prompt) == ["build this size guide"])
+    }
+
+    @Test func onlyTheMessageThatAskedLendsItsImages() async throws {
+        let host = FakeHost()
+        let runner = FakeRunner([.success("A red home shirt."), .success(sendToShop), .success(goToShop)])
+        let chat = OverseerChat(runner: runner, file: nil, settingsFile: nil)
+        await ask(chat, host, "what is this?", images: [kitPhoto])
+        await ask(chat, host, "tell the checkout one to rebase")
+        #expect(try #require(chat.card).images.isEmpty)
+        #expect(runner.requests.map(\.images) == [[kitPhoto], []])
+        #expect(runner.requests[1].resume)  // the second turn carries on the first; Claude Code has its image
+        await ask(chat, host, "take me there", images: [screenshot])
+        #expect(try #require(chat.card).images.isEmpty)  // going to a tab sends nothing
+    }
+
+    @Test func imagesAloneAreAQuestion() async {
+        let runner = FakeRunner([.success("A red home shirt.")])
+        let chat = OverseerChat(runner: runner, file: nil, settingsFile: nil)
+        await ask(chat, FakeHost(), "  ", images: [kitPhoto, screenshot])
+        #expect(chat.conversation.messages.first?.text == "")
+        #expect(runner.requests.first?.message.hasSuffix("\n\n(2 images, with no words.)") == true)
+    }
+
+    @Test func aFreshConversationIsToldImagesWereSent() {
+        let earlier = [OverseerMessage(role: .user, text: "what is this?", attachments: [kitPhoto])]
+        let message = OverseerPrompt.message("and now?", briefing: "b", since: [], earlier: earlier)
+        #expect(message.contains("Developer: what is this? [an image attached]"))
+    }
+
+    @Test func imagesInUseAreTheMessagesDraftsAndCards() async {
+        let chat = OverseerChat(runner: FakeRunner([.success(sendToShop)]), file: nil, settingsFile: nil)
+        await ask(chat, FakeHost(), "send this to the checkout one", images: [screenshot])
+        chat.draftImages = [kitPhoto]
+        #expect(chat.imagesInUse == [screenshot.path, kitPhoto.path])
+    }
+}
+
+@MainActor
+struct ImagePersistenceTests {
+    @Test func messagesKeepTheirImagesAcrossARestartAsPaths() async throws {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("lotc-overseer-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: file) }
+        let runner = FakeRunner([.success("A red home shirt.")])
+        let chat = OverseerChat(runner: runner, file: file, settingsFile: nil)
+        chat.draft = "what is this?"
+        chat.draftImages = [kitPhoto, screenshot]
+        chat.submit(to: FakeHost())
+        await chat.settle()
+
+        let restarted = OverseerChat(runner: runner, file: file, settingsFile: nil)
+        #expect(restarted.conversation == chat.conversation)
+        #expect(restarted.conversation.messages.map(\.images) == [[kitPhoto, screenshot], []])
+
+        let saved = try #require(try JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
+        let messages = try #require(saved["messages"] as? [[String: Any]])
+        #expect(messages[0]["attachments"] as? [String] == [kitPhoto.path, screenshot.path])
+        #expect(messages[1]["attachments"] == nil)  // nothing written for a message without images
     }
 }

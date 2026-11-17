@@ -21,6 +21,8 @@ enum MainKey: Equatable {
     case nothing
     case send
     case sendReply
+    /// Cmd+V with an image on the clipboard, in a field that takes images.
+    case pasteImages
     case newLine
     case confirmCard
     case escape
@@ -49,6 +51,16 @@ enum MainKeys {
         var cardWaiting = false
         /// An input method is part way through a character, so Return is its.
         var composing = false
+        /// What is on the clipboard is images, not text.
+        var imagesToPaste = false
+    }
+
+    /// The fields an image can be pasted or dropped into: they send to the overseer or a session.
+    static func takesImages(_ field: MainField?) -> Bool {
+        switch field {
+        case .composer, .proposal, .reply: true
+        default: false
+        }
     }
 
     static func route(keyCode: Int, modifiers: NSEvent.ModifierFlags, characters: String?, in context: Context) -> MainKey {
@@ -63,6 +75,7 @@ enum MainKeys {
             case (_, "l"): return .focusComposer
             case (_, "f"): return .focusFilter
             case (_, "r"): return .reply
+            case (_, "v") where context.imagesToPaste && takesImages(context.focus): return .pasteImages
             default: break
             }
         }

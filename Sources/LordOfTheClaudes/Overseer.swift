@@ -12,6 +12,8 @@ enum OverseerFiles {
     static let settings = directory.appendingPathComponent("overseer-settings.json")
     /// The overseer's working directory. Sessions running here are the overseer's and never listed.
     static let workspace = directory.appendingPathComponent("overseer")
+    /// Images pasted or dropped into the window, named by content hash.
+    static let attachments = directory.appendingPathComponent("attachments")
 
     static func isOverseer(cwd: String) -> Bool { TabMatch.samePath(cwd, workspace.path) }
 }
@@ -58,6 +60,10 @@ struct OverseerMessage: Codable, Identifiable, Equatable {
     let role: Role
     let text: String
     var at = Date()
+    /// Images the user sent with it. Nil in files from before images, and on every other message.
+    var attachments: [AttachedImage]?
+
+    var images: [AttachedImage] { attachments ?? [] }
 }
 
 /// The chat as kept in overseer.json: the last `cap` messages and Claude Code's id for the conversation.
@@ -118,6 +124,9 @@ enum OverseerPrompt {
 
         - "prompt" is the exact text to type into the session, addressed to it, in the developer's words \
         where you can. Add nothing of your own.
+        - The developer may attach images, such as screenshots, which you see. A prompt proposed from a message \
+        with images carries those images: the app adds them itself. Refer to them ("the attached screenshot") \
+        rather than describing them, and never say they cannot be sent.
         - More than one target only when the developer asks for several sessions.
         - When no open session fits and the work needs a new one, propose a new session in the directory \
         the work belongs in, taken from the briefing:
@@ -152,18 +161,21 @@ enum OverseerPrompt {
     static let carriedCharacters = 600
 
     /// The developer's words, after the briefing and anything done since the last answer. A fresh Claude Code
-    /// conversation that follows an earlier one is given the end of it first, so the chat carries on.
+    /// conversation that follows an earlier one is given the end of it first, so the chat carries on. Images go
+    /// beside this text, not in it.
     static func message(_ text: String, briefing: String, since notes: [String], earlier: [OverseerMessage] = [],
-                        at date: Date = Date()) -> String {
+                        images: Int = 0, at date: Date = Date()) -> String {
         var parts: [String] = []
         if !earlier.isEmpty { parts.append(carried(earlier)) }
         parts.append("<briefing at=\"\(date.formatted(date: .omitted, time: .shortened))\">\n\(briefing)\n</briefing>")
         if !notes.isEmpty {
             parts.append("<since-your-last-answer>\n" + notes.map { "- " + $0 }.joined(separator: "\n") + "\n</since-your-last-answer>")
         }
-        parts.append(text)
+        parts.append(text.isEmpty && images > 0 ? "(\(imageCount(images)), with no words.)" : text)
         return parts.joined(separator: "\n\n")
     }
+
+    static func imageCount(_ count: Int) -> String { count == 1 ? "An image" : "\(count) images" }
 
     private static func carried(_ messages: [OverseerMessage]) -> String {
         let lines = messages.suffix(carriedMessages).map { message in
@@ -173,7 +185,8 @@ enum OverseerPrompt {
             case .note: "App"
             }
             let text = message.text.count > carriedCharacters ? message.text.prefix(carriedCharacters) + "…" : Substring(message.text)
-            return "\(who): \(text)"
+            let images = message.images.isEmpty ? "" : " [\(imageCount(message.images.count).lowercased()) attached]"
+            return "\(who): \(text)\(images)"
         }
         return (["<earlier-conversation>",
                  "Your conversation with the developer so far, carried over from an earlier Claude Code session. "
@@ -188,10 +201,10 @@ enum OverseerPrompt {
 protocol OverseerHost: AnyObject {
     func digestBriefing() -> String
     var overseerPlaces: [SessionPlace] { get }
-    /// Types a prompt into a session's tab. False when its tab cannot be found.
-    func send(_ text: String, toSession sessionId: String) async -> Bool
-    /// Opens a tab in the window (the front one when it has gone) and starts Claude Code with the prompt.
-    func startSession(prompt: String, cwd: String, windowId: String?) async -> Ghostty.NewTab?
+    /// Types a prompt into a session's tab, with the paths of its images. False when its tab cannot be found.
+    func send(_ text: String, images: [AttachedImage], toSession sessionId: String) async -> Bool
+    /// Opens a tab in the window (the front one when it has gone) and starts Claude Code with the prompt and images.
+    func startSession(prompt: String, images: [AttachedImage], cwd: String, windowId: String?) async -> Ghostty.NewTab?
     /// Brings a session's tab to the front. False when its tab cannot be found.
     func goTo(session sessionId: String) -> Bool
 }
@@ -209,8 +222,11 @@ extension Store: OverseerHost {
         return places
     }
 
-    func startSession(prompt: String, cwd: String, windowId: String?) async -> Ghostty.NewTab? {
-        await Task.detached { Ghostty.startClaude(prompt: prompt, cwd: cwd, inWindow: windowId) }.value
+    func startSession(prompt: String, images: [AttachedImage], cwd: String, windowId: String?) async -> Ghostty.NewTab? {
+        let text = TypedPrompt.text(prompt, images: images)
+        // A new session reads the images with its Read tool, which asks first outside its own directories.
+        let readable = images.isEmpty ? nil : OverseerFiles.attachments.path
+        return await Task.detached { Ghostty.startClaude(prompt: text, cwd: cwd, inWindow: windowId, alsoReading: readable) }.value
     }
 }
 
@@ -218,10 +234,13 @@ extension Store: OverseerHost {
 /// proposal survives the window hiding; the conversation itself survives restarts in overseer.json.
 @MainActor
 final class OverseerChat: ObservableObject {
-    static let shared = OverseerChat(runner: ClaudeCLI(), file: OverseerFiles.conversation, settingsFile: OverseerFiles.settings)
+    static let shared = OverseerChat(runner: ClaudeCLI(), file: OverseerFiles.conversation, settingsFile: OverseerFiles.settings,
+                                     attachments: OverseerFiles.attachments)
 
     @Published private(set) var conversation: OverseerConversation
     @Published var draft = ""
+    /// Images pasted or dropped into the composer, to go with the draft.
+    @Published var draftImages: [AttachedImage] = []
     /// The answer so far while one is coming; nil when not asking.
     @Published private(set) var streaming: String?
     /// What the overseer proposes to do, waiting for the user's Send or Cancel.
@@ -230,20 +249,24 @@ final class OverseerChat: ObservableObject {
     @Published var showingNeeds = false
 
     var isAsking: Bool { streaming != nil }
+    var hasDraft: Bool { draft.trimmedNonEmpty != nil || !draftImages.isEmpty }
 
     private let runner: OverseerRunning
     private let file: URL?
     private let settingsFile: URL?
+    /// Where images are kept, for the clean-up. Nil cleans nothing up.
+    let attachments: URL?
     /// What happened since the last answer, told to the overseer with the next message.
     private var unsaid: [String] = []
     private var asking: Task<Void, Never>?
     /// Bumped by "New chat", so a question cancelled by it leaves no trace in the new conversation.
     private var generation = 0
 
-    init(runner: OverseerRunning, file: URL?, settingsFile: URL?) {
+    init(runner: OverseerRunning, file: URL?, settingsFile: URL?, attachments: URL? = nil) {
         self.runner = runner
         self.file = file
         self.settingsFile = settingsFile
+        self.attachments = attachments
         conversation = file.map(OverseerConversation.load(from:)) ?? OverseerConversation()
     }
 
@@ -252,22 +275,26 @@ final class OverseerChat: ObservableObject {
         runner = DemoRunner()
         file = nil
         settingsFile = nil
+        attachments = nil
         conversation = OverseerConversation(sessionId: nil, messages: messages)
         self.card = card
     }
 
-    /// Asks the overseer what is in the draft. A new question drops any proposal still on screen.
+    /// Asks the overseer what is in the draft, its images with it. A new question drops any proposal still on screen.
     func submit(to host: OverseerHost) {
-        guard let text = draft.trimmedNonEmpty, !isAsking else { return }
+        guard hasDraft, !isAsking else { return }
+        let text = draft.trimmedNonEmpty ?? ""
+        let images = draftImages
         draft = ""
+        draftImages = []
         showingNeeds = false
         if card != nil { cancelCard() }
         let earlier = conversation.messages
         // Claude Code would keep the old instructions on resume, so changed ones need a fresh conversation.
         let outdated = conversation.sessionId != nil && conversation.instructions != OverseerPrompt.fingerprint
         if outdated { append(.note, "The overseer has new instructions, so it starts a fresh conversation with this chat's recent messages.") }
-        append(.user, text)
-        let turn = Turn(text: text, briefing: host.digestBriefing(), since: unsaid, earlier: earlier,
+        append(.user, text, images: images)
+        let turn = Turn(text: text, images: images, briefing: host.digestBriefing(), since: unsaid, earlier: earlier,
                         resuming: outdated ? nil : conversation.sessionId)
         unsaid = []
         streaming = ""
@@ -278,6 +305,7 @@ final class OverseerChat: ObservableObject {
     /// One question as asked: the words, what went with them, and the conversation to carry on.
     private struct Turn {
         let text: String
+        let images: [AttachedImage]
         let briefing: String
         let since: [String]
         /// The chat before this question, given to a fresh Claude Code conversation.
@@ -286,7 +314,7 @@ final class OverseerChat: ObservableObject {
         let resuming: String?
 
         func message(fresh: Bool) -> String {
-            OverseerPrompt.message(text, briefing: briefing, since: since, earlier: fresh ? earlier : [])
+            OverseerPrompt.message(text, briefing: briefing, since: since, earlier: fresh ? earlier : [], images: images.count)
         }
     }
 
@@ -312,16 +340,21 @@ final class OverseerChat: ObservableObject {
         do {
             let reply: String
             do {
-                reply = try await turn(question.message(fresh: question.resuming == nil), settings: settings,
-                                       sessionId: question.resuming)
+                reply = try await turn(question.message(fresh: question.resuming == nil), images: question.images,
+                                       settings: settings, sessionId: question.resuming)
             } catch OverseerFailure.conversationGone {
                 append(.note, "The earlier conversation had gone from Claude Code, so this starts a new one.")
-                reply = try await turn(question.message(fresh: true), settings: settings, sessionId: nil)
+                reply = try await turn(question.message(fresh: true), images: question.images, settings: settings, sessionId: nil)
             }
             let answer = OverseerAnswer.parse(reply)
             append(.overseer, answer.text.isEmpty && answer.proposal != nil ? "Here is what I would send." : answer.text)
             if answer.unreadableProposal { append(.note, "It proposed something the app could not read, so nothing is offered to send.") }
-            if let proposal = answer.proposal { offer(RoutingCard.make(proposal, places: host.overseerPlaces)) }
+            if let proposal = answer.proposal {
+                var card = RoutingCard.make(proposal, places: host.overseerPlaces)
+                // The images asked about go with the prompt, listed on the card before anything is sent.
+                if card.hasPrompt { card.images = question.images }
+                offer(card)
+            }
         } catch is CancellationError {
             if generation == current { append(.note, "Stopped.") }
         } catch OverseerFailure.noClaude {
@@ -337,10 +370,11 @@ final class OverseerChat: ObservableObject {
     }
 
     /// One `claude -p`: resumes the conversation, or starts it under a fresh id. The id is kept once it has answered.
-    private func turn(_ message: String, settings: OverseerSettings, sessionId: String?) async throws -> String {
+    private func turn(_ message: String, images: [AttachedImage], settings: OverseerSettings, sessionId: String?) async throws -> String {
         let id = sessionId ?? UUID().uuidString.lowercased()
-        let request = OverseerRequest(message: message, systemPrompt: OverseerPrompt.system, sessionId: id,
+        var request = OverseerRequest(message: message, systemPrompt: OverseerPrompt.system, sessionId: id,
                                       resume: sessionId != nil, settings: settings)
+        request.images = images
         var answer: String?
         for try await event in runner.run(request) {
             try Task.checkCancellation()
@@ -370,29 +404,31 @@ final class OverseerChat: ObservableObject {
     func confirm(using host: OverseerHost, fromKeyboard: Bool = false) async {
         guard let card, card.canSend, !card.sending, !fromKeyboard || card.isArmed else { return }
         let prompt = card.prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        let images = card.images
+        let withImages = images.isEmpty ? "" : ", with \(OverseerPrompt.imageCount(images.count).lowercased())"
         self.card?.sending = true
         switch card.kind {
         case .send(let places, _):
             var reached: [SessionPlace] = []
             var missed: [SessionPlace] = []
             for place in places {
-                if await host.send(prompt, toSession: place.rowId) { reached.append(place) } else { missed.append(place) }
+                if await host.send(prompt, images: images, toSession: place.rowId) { reached.append(place) } else { missed.append(place) }
             }
             if !reached.isEmpty {
-                append(.note, "Sent to \(Self.list(reached)).")
-                unsaid.append("The developer sent this to \(Self.list(reached)): \(prompt)")
+                append(.note, "Sent to \(Self.list(reached))\(withImages).")
+                unsaid.append("The developer sent this to \(Self.list(reached))\(withImages): \(prompt)")
             }
             if !missed.isEmpty {
                 append(.note, "Could not type into \(Self.list(missed)): its tab has gone or been renamed. Nothing was sent there.")
             }
         case .newSession(let cwd, let group, let windowId):
-            switch await host.startSession(prompt: prompt, cwd: cwd, windowId: windowId) {
-            case .inItsWindow?: append(.note, "Started a new session in \(group ?? "its window").")
-            case .inFrontWindow?: append(.note, "Started a new session in the front window: \(group.map { "the \($0) window" } ?? "its window") has gone.")
-            case .inNewWindow?: append(.note, "Started a new session in a new window.")
+            switch await host.startSession(prompt: prompt, images: images, cwd: cwd, windowId: windowId) {
+            case .inItsWindow?: append(.note, "Started a new session in \(group ?? "its window")\(withImages).")
+            case .inFrontWindow?: append(.note, "Started a new session in the front window\(withImages): \(group.map { "the \($0) window" } ?? "its window") has gone.")
+            case .inNewWindow?: append(.note, "Started a new session in a new window\(withImages).")
             case nil: append(.note, "Could not open a tab in Ghostty. Nothing was started.")
             }
-            unsaid.append("The developer started a new session in \(cwd) with: \(prompt)")
+            unsaid.append("The developer started a new session in \(cwd)\(withImages) with: \(prompt)")
         case .goTo(let places, _):
             guard let place = places.first else { break }
             if host.goTo(session: place.rowId) {
@@ -418,7 +454,7 @@ final class OverseerChat: ObservableObject {
     func choose(_ place: SessionPlace) {
         guard let card else { return }
         switch card.kind {
-        case .choose: self.card = RoutingCard(kind: .send([place], missing: []), prompt: card.prompt)
+        case .choose: self.card = RoutingCard(kind: .send([place], missing: []), prompt: card.prompt, images: card.images)
         case .goTo(let places, _) where places.count > 1: self.card = RoutingCard(kind: .goTo([place], missing: []), prompt: "")
         default: break
         }
@@ -427,10 +463,24 @@ final class OverseerChat: ObservableObject {
     /// A proposal waiting when the window shows again must be read again before Return acts on it.
     func windowShown() { card?.shownAt = Date() }
 
-    private func append(_ role: OverseerMessage.Role, _ text: String) {
-        conversation.append(OverseerMessage(role: role, text: text))
+    private func append(_ role: OverseerMessage.Role, _ text: String, images: [AttachedImage] = []) {
+        conversation.append(OverseerMessage(role: role, text: text, attachments: images.isEmpty ? nil : images))
         if role != .user { AccessibilityNotification.Announcement(text).post() }
         save()
+    }
+
+    // MARK: Images
+
+    /// Every image something here still refers to: the saved messages, the draft and the card.
+    var imagesInUse: Set<String> {
+        Set((conversation.messages.flatMap(\.images) + draftImages + (card?.images ?? [])).map(\.path))
+    }
+
+    /// Removes the week-old images nothing refers to, off the main thread. `keeping` adds images held elsewhere.
+    func sweepAttachments(keeping more: [AttachedImage] = []) {
+        guard let attachments else { return }
+        let keeping = imagesInUse.union(more.map(\.path))
+        DispatchQueue.global(qos: .utility).async { AttachmentSweep.sweep(attachments, keeping: keeping) }
     }
 
     private func save() { if let file { conversation.save(to: file) } }

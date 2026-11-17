@@ -514,10 +514,18 @@ final class Store: ObservableObject {
     /// Types a prompt into the session's tab and submits it. False when its tab cannot be found.
     @discardableResult
     func send(_ text: String, toSession sessionId: String) async -> Bool {
+        await send(text, images: [], toSession: sessionId)
+    }
+
+    /// The prompt, then each image's path on a line of its own (TypedPrompt).
+    @discardableResult
+    func send(_ text: String, images: [AttachedImage], toSession sessionId: String) async -> Bool {
         guard !isDemo, let row = rows.first(where: { $0.id == sessionId }), row.isLive,
               let terminal = tabs[row.id]
         else { return false }
-        let sent = await Task.detached { Ghostty.send(text: text, toTerminal: terminal.id) }.value
+        let typed = TypedPrompt.text(text, images: images)
+        let settle = TypedPrompt.settle(images: images.count)
+        let sent = await Task.detached { Ghostty.send(text: typed, toTerminal: terminal.id, settle: settle) }.value
         if sent { await poll() }
         return sent
     }

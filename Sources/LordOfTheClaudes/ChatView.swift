@@ -6,6 +6,7 @@ struct ChatView: View {
     @ObservedObject var chat: OverseerChat
     @ObservedObject var model: WindowModel
     var focus: FocusState<MainField?>.Binding
+    @State private var dropping = false
 
     private static let bottomId = "chat-bottom"
     private var store: Store { model.store }
@@ -43,6 +44,8 @@ struct ChatView: View {
             .readingColumn()
             .padding(.top, 8).padding(.bottom, 12)
         }
+        .takesDroppedImages(into: $chat.draftImages, isTargeted: $dropping)
+        .overlay { if dropping { DropHighlight() } }
         .environment(\.openURL, OpenURLAction { url in
             guard let id = AnswerText.sessionId(in: url) else { return .systemAction }
             if let row = store.rows.first(where: { $0.id == id }) { model.show(row) }
@@ -81,13 +84,23 @@ struct ChatView: View {
         case .user:
             HStack {
                 Spacer(minLength: 80)
-                Text(message.text)
-                    .textSelection(.enabled)
-                    .padding(.horizontal, 12).padding(.vertical, 7)
-                    .background(RoundedRectangle(cornerRadius: 12).fill(Color.accentColor.opacity(0.18)))
+                VStack(alignment: .trailing, spacing: 6) {
+                    if !message.images.isEmpty {
+                        HStack(spacing: 6) {
+                            ForEach(Array(message.images.enumerated()), id: \.element) { index, image in
+                                Thumbnail(image: image, height: 96, label: "Image \(index + 1) of \(message.images.count)", opens: true)
+                            }
+                        }
+                    }
+                    if !message.text.isEmpty {
+                        Text(message.text)
+                            .textSelection(.enabled)
+                            .padding(.horizontal, 12).padding(.vertical, 7)
+                            .background(RoundedRectangle(cornerRadius: 12).fill(Color.accentColor.opacity(0.18)))
+                            .accessibilityLabel("You: \(message.text)")
+                    }
+                }
             }
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel("You: \(message.text)")
         case .overseer:
             Text(AnswerText.attributed(message.text, places: places))
                 .textSelection(.enabled)
@@ -118,7 +131,7 @@ struct ChatView: View {
     private var card: some View {
         RoutingCardView(
             card: Binding(get: { chat.card ?? RoutingCard(kind: .send([], missing: []), prompt: "") },
-                          set: { chat.card = $0 }),
+                          set: { card in if chat.card?.id == card.id { chat.card = card } }),
             send: {
                 Task {
                     await chat.confirm(using: store)
