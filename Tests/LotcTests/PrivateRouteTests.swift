@@ -87,7 +87,7 @@ struct PrivateRouteTests {
 
 /// The real Store's briefing and places; sending and going are recorded, never typed into Ghostty.
 @MainActor
-private final class StoreHost: OverseerHost {
+final class StoreHost: OverseerHost {
     let store: Store
     private(set) var sent: [(text: String, sessionId: String, images: [AttachedImage])] = []
     private(set) var wentTo: [String] = []
@@ -108,6 +108,8 @@ private final class StoreHost: OverseerHost {
         wentTo.append(sessionId)
         return true
     }
+
+    func isExcluded(_ cwd: String) -> Bool { store.isExcluded(cwd) }
 }
 
 @MainActor
@@ -137,8 +139,10 @@ struct PrivateChatTests {
     private let secrets = ["reconcile", "mortgage", "statement", "lender", "finances", "budget", "summer", "holiday",
                            "ferry", "cottage", "the totals"]
 
-    private func leaks(_ request: OverseerRequest) -> [String] {
-        let told = (request.message + request.systemPrompt).lowercased()
+    private func leaks(_ request: OverseerRequest) -> [String] { leaks(in: request.message + request.systemPrompt) }
+
+    private func leaks(in text: String) -> [String] {
+        let told = text.lowercased()
         return secrets.filter { told.contains($0) }
     }
 
@@ -205,13 +209,22 @@ struct PrivateChatTests {
 
         let runner = FakeRunner([.success("Nobody is waiting."), .success("Still nobody."), .failure(.conversationGone),
                                  .success("Nobody, still.")])
-        let chat = OverseerChat(runner: runner, file: file, settingsFile: nil)
+        let reader = FakeReader()
+        let chat = OverseerChat(runner: runner, file: file, settingsFile: nil, reader: reader, timing: fastTiming)
         // Answered here: going to one, sending to the other with an image, and cancelling.
         await ask(chat, host, "let's go to the chat talking about reconcile mortgage")
         await chat.confirm(using: host)
         await ask(chat, host, "tell the summer holiday one to price the ferry",
                   images: [AttachedImage(path: "/tmp/lotc-test/attachments/2c3d.jpg")])
+        reader.busy("holiday")
         await chat.confirm(using: host)
+        // Its reply is said here, with a Go, and never read.
+        reader.answers("holiday", "The ferry is £212 return; the cottage has a dog bowl.")
+        let replied = "Budget the summer holiday has replied. It is private, so open it to read the answer."
+        #expect(await eventually { chat.conversation.messages.contains { $0.text == replied } })
+        let note = try #require(chat.conversation.messages.first { $0.text == replied })
+        #expect(note.isPrivate == true && note.goTo == "holiday")
+        #expect(reader.read.isEmpty)
         await ask(chat, host, "reconcile the mortgage statements: rerun the totals")
         chat.cancelCard()
         #expect(runner.requests.isEmpty)
@@ -245,6 +258,53 @@ struct PrivateChatTests {
 
         // Everything said about them is still on screen.
         #expect(restarted.conversation.messages.contains { $0.text == "let's go to the chat talking about reconcile mortgage" })
+        #expect(reader.read.isEmpty)
+    }
+
+    @Test func noWayOfSendingReadsAPrivateSession() async throws {
+        let store = store()
+        let host = StoreHost(store)
+        let reader = FakeReader()
+        let readMortgage = "```lotc\n{\"action\": \"read\", \"target\": {\"title\": \"Reconcile the mortgage statements\"}}\n```"
+        let runner = FakeRunner([.success(readMortgage), .success("I cannot see that one."), .success("The shop one answered.")])
+        let chat = OverseerChat(runner: runner, file: nil, settingsFile: nil, reader: reader, timing: fastTiming)
+
+        // A read the overseer asks for, by a private session's title.
+        await ask(chat, host, "what did the bank papers one say?")
+        #expect(runner.requests.count == 2 && reader.read.isEmpty)
+
+        // The megaphone to a public and a private session.
+        let places = store.overseerPlaces
+        let shop = try #require(places.first { $0.rowId == "shop" })
+        let mortgage = try #require(places.first { $0.rowId == "mortgage" })
+        reader.answers("shop", "Fifty runs, all green.")
+        reader.answers("mortgage", "The lender's figures match the statements.")
+        chat.follow([SentPrompt(place: shop, prompt: "run it again", at: Date()),
+                     SentPrompt(place: mortgage, prompt: "run it again", at: Date())], broadcast: "shop", host: host)
+        #expect(await eventually { runner.requests.count == 3 })
+        await chat.settle()
+        #expect(runner.requests[2].message.contains("Fifty runs, all green."))
+        #expect(reader.read == ["shop"])
+        #expect(runner.requests.map(leaks) == [[], [], []])
+        #expect(chat.conversation.messages.contains { $0.goTo == "mortgage" && $0.isPrivate == true })
+        #expect(chat.conversation.messages.filter { $0.isPrivate != true }.allSatisfy { leaks(in: $0.text).isEmpty })
+    }
+
+    @Test func aDirectoryExcludedBeforeTheAnswerKeepsItUnread() async throws {
+        let host = FakeHost()
+        host.overseerPlaces = sessions
+        let reader = FakeReader()
+        let send = "Sending.\n```lotc\n{\"action\": \"send\", \"targets\": [{\"title\": \"Fix flaky checkout test\"}], \"prompt\": \"run it\"}\n```"
+        let runner = FakeRunner([.success(send), .success("never asked")])
+        let chat = OverseerChat(runner: runner, file: nil, settingsFile: nil, reader: reader, timing: fastTiming)
+        await ask(chat, host, "tell the checkout one to run it")
+        reader.busy("checkout")
+        await chat.confirm(using: host)
+        host.excluded = ["/p/shop"]
+        reader.answers("checkout", "All green, and the secret token is in .env.")
+        #expect(await eventually { chat.conversation.messages.contains { $0.goTo == "checkout" } })
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(runner.requests.count == 1 && reader.read.isEmpty)
     }
 
     @Test func whatTheOverseerProposesNeverLandsOnAPrivateSession() async throws {

@@ -92,7 +92,14 @@ struct RoutingCard: Identifiable, Equatable {
         case .choose(_, let targets, nil), .goTo(let targets):
             let found = unique(targets.flatMap { resolve($0, in: places) })
             return RoutingCard(kind: .goTo(found, missing: found.isEmpty ? targets.map(describe) : []), prompt: "")
+        case .read(let target, _):
+            // The app does reads itself; should one reach here, it offers nothing to press.
+            return RoutingCard(kind: .goTo([], missing: [describe(target)]), prompt: "")
         }
+    }
+
+    static func describe(_ target: ProposedTarget) -> String {
+        [target.group, target.tab.map { "tab \($0)" }, target.title.map { "\"\($0)\"" }].compactMap { $0 }.joined(separator: ", ")
     }
 
     /// Every running session a target could mean.
@@ -107,10 +114,6 @@ struct RoutingCard: Identifiable, Equatable {
     private static func unique(_ places: [SessionPlace]) -> [SessionPlace] {
         var seen = Set<String>()
         return places.filter { seen.insert($0.rowId).inserted }
-    }
-
-    private static func describe(_ target: ProposedTarget) -> String {
-        [target.group, target.tab.map { "tab \($0)" }, target.title.map { "\"\($0)\"" }].compactMap { $0 }.joined(separator: ", ")
     }
 
     private static func isDirectory(_ path: String) -> Bool {

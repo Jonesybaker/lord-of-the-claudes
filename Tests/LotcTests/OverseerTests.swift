@@ -215,6 +215,10 @@ final class FakeHost: OverseerHost {
         wentTo.append(sessionId)
         return true
     }
+
+    /// Directories made private by the test.
+    var excluded: Set<String> = []
+    func isExcluded(_ cwd: String) -> Bool { excluded.contains(cwd) }
 }
 
 private let sendToShop = """

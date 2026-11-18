@@ -96,8 +96,11 @@ enum Proposal: Equatable {
     case choose(question: String?, candidates: [ProposedTarget], prompt: String?)
     /// Bring a session's tab to the front, for the user to look at themselves. Several are a "which one?".
     case goTo(targets: [ProposedTarget])
+    /// Read a session's latest exchanges back to the overseer. Read-only, so the app does it unasked.
+    case read(target: ProposedTarget, turns: Int)
 
     static let goToActions: Set<String> = ["goto", "go_to", "go-to", "go"]
+    static let readTurns = 1...5
 
     init?(json: Any) {
         guard let object = json as? [String: Any], let action = (object["action"] as? String)?.lowercased() else { return nil }
@@ -121,6 +124,12 @@ enum Proposal: Equatable {
             let found = targets("candidates")
             guard !found.isEmpty else { return nil }
             self = .choose(question: (object["question"] as? String)?.trimmedNonEmpty, candidates: found, prompt: prompt)
+        case "read":
+            // One session only: several would be a guess.
+            let found = object["target"].flatMap(ProposedTarget.init(json:)).map { [$0] } ?? targets("targets")
+            guard found.count == 1 else { return nil }
+            let asked = (object["turns"] as? Int) ?? (object["turns"] as? String).flatMap { Int($0.filter(\.isNumber)) } ?? 1
+            self = .read(target: found[0], turns: min(max(asked, Self.readTurns.lowerBound), Self.readTurns.upperBound))
         default:
             return nil
         }

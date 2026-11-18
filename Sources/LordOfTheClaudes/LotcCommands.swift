@@ -78,30 +78,25 @@ extension LotcServer {
 
     private func waitForTurn(of row: Row, timeout: TimeInterval, caller: String) async -> LotcResponse {
         let tab = row.tab ?? 0
-        let sentAt = lastSentAt[row.id]
-        let deadline = Date().addingTimeInterval(timeout)
-        var finishedChecks = 0
-        var status = row.status ?? "closed"
-        while true {
-            let id = row.id
-            guard let session = await Task.detached(operation: { ClaudeData.liveSessions().first { $0.sessionId == id } }).value
-            else { return .failure("Tab \(tab) (\(row.title)) is no longer running.") }
-            status = session.status
-            let finished = TurnCheck.hasFinished(status: session.status, statusChangedAt: session.statusUpdatedAt, sentAt: sentAt)
-            finishedChecks = finished ? finishedChecks + 1 : 0
-            // Twice running: Claude Code can go idle for a moment between a turn and a prompt queued behind it.
-            if finishedChecks >= 2 || (finishedChecks == 1 && Date() >= deadline) { break }
-            if Date() >= deadline {
-                return .failure("""
-                    Tab \(tab) (\(row.title)) has not finished after \(Int(timeout)) seconds (status: \(status)). \
-                    Run lotc wait \(tab) again to keep waiting.
-                    """)
-            }
-            try? await Task.sleep(for: .seconds(1))
+        let id = row.id
+        let outcome = await TurnWatch.wait(sentAt: lastSentAt[row.id], deadline: Date().addingTimeInterval(timeout)) {
+            await Task.detached(operation: { ClaudeData.liveSessions().first { $0.sessionId == id } }).value.map(TurnStatus.init)
         }
-        var session = Self.summary(of: row, caller: caller)
-        session.status = status
-        return .message(LastMessage(session: session, text: await lastText(of: row)))
+        switch outcome {
+        case .closed:
+            return .failure("Tab \(tab) (\(row.title)) is no longer running.")
+        case .timedOut(let status):
+            return .failure("""
+                Tab \(tab) (\(row.title)) has not finished after \(Int(timeout)) seconds (status: \(status.status)). \
+                Run lotc wait \(tab) again to keep waiting.
+                """)
+        case .cancelled:
+            return .failure("Stopped waiting for tab \(tab) (\(row.title)).")
+        case .finished(let status):
+            var session = Self.summary(of: row, caller: caller)
+            session.status = status.status
+            return .message(LastMessage(session: session, text: await lastText(of: row)))
+        }
     }
 
     private func lastText(of row: Row) async -> String {
@@ -121,17 +116,6 @@ extension LotcServer {
 
     private static func cannotType(_ row: Row) -> String {
         "Could not type into tab \(row.tab ?? 0) (\(row.title)). Its Ghostty tab may have been renamed or closed."
-    }
-}
-
-/// Whether a session has finished the work `lotc send` gave it.
-enum TurnCheck {
-    /// Not busy, and its status has changed since the prompt was typed.
-    /// With nothing typed, finished as soon as it is not busy.
-    static func hasFinished(status: String, statusChangedAt: Date, sentAt: Date?) -> Bool {
-        guard status != "busy" else { return false }
-        guard let sentAt else { return true }
-        return statusChangedAt > sentAt
     }
 }
 

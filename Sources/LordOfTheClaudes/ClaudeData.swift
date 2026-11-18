@@ -12,6 +12,8 @@ struct LiveSession {
     let updatedAt: Date
     /// When `status` last changed, e.g. when Claude finished working.
     let statusUpdatedAt: Date
+    /// With status "waiting": what it needs, "permission prompt" or "input needed".
+    var waitingFor: String? = nil
 }
 
 /// What the user has typed into a session, from Claude's prompt history.
@@ -60,7 +62,8 @@ final class ClaudeData: @unchecked Sendable {
                 status: json["status"] as? String ?? "idle",
                 startedAt: startedAt,
                 updatedAt: Date(timeIntervalSince1970: updatedMs / 1000),
-                statusUpdatedAt: Date(timeIntervalSince1970: ((json["statusUpdatedAt"] as? Double) ?? updatedMs) / 1000)
+                statusUpdatedAt: Date(timeIntervalSince1970: ((json["statusUpdatedAt"] as? Double) ?? updatedMs) / 1000),
+                waitingFor: json["waitingFor"] as? String
             )
         }
     }

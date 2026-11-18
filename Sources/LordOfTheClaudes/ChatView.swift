@@ -38,6 +38,7 @@ struct ChatView: View {
                 .onChange(of: showsNeeds) { proxy.scrollTo(Self.bottomId, anchor: .bottom) }
             }
             VStack(spacing: 10) {
+                if !chat.watching.isEmpty { watching }
                 if chat.card != nil { card }
                 Composer(chat: chat, store: store, focus: focus)
             }
@@ -111,10 +112,37 @@ struct ChatView: View {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Image(systemName: "info.circle")
                 Text(message.text).fixedSize(horizontal: false, vertical: true)
+                if let id = message.goTo, let row = store.rows.first(where: { $0.id == id && $0.isLive }) {
+                    Button("Go") { model.goTo(row) }
+                        .controlSize(.small)
+                        .help("Brings its Ghostty tab to the front")
+                        .accessibilityLabel("Go to \(row.title)")
+                }
             }
             .font(.callout).foregroundStyle(.secondary)
-            .accessibilityElement(children: .combine)
+            .accessibilityElement(children: .contain)
         }
+    }
+
+    /// The sessions a prompt went to, until each stops. The composer stays free meanwhile.
+    private var watching: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ForEach(chat.watching) { watched in
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.mini)
+                    Text("Waiting for \(watched.place.title) (\(watched.place.spot))...")
+                        .lineLimit(1).truncationMode(.middle)
+                        .foregroundStyle(.secondary)
+                    Spacer(minLength: 8)
+                    Button("Stop watching") { chat.stopWatching(watched.id) }
+                        .buttonStyle(.link)
+                        .help("Stop waiting for its answer. Nothing is sent to it.")
+                        .accessibilityLabel("Stop watching \(watched.place.title)")
+                }
+                .font(.caption)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func answering(_ text: String, places: [SessionPlace]) -> some View {
