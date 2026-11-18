@@ -66,6 +66,9 @@ struct Sidebar: View {
                     Text(overseerStatus).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 }
                 Spacer()
+                if chat.unread {
+                    Circle().fill(Color.accentColor).frame(width: 8, height: 8).accessibilityHidden(true)
+                }
                 Text("⌘L").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
             }
             .padding(.horizontal, 12).padding(.vertical, 6)
@@ -74,12 +77,15 @@ struct Sidebar: View {
         }
         .buttonStyle(.plain)
         .help("Chat with the overseer (⌘L)")
-        .accessibilityLabel("Overseer. \(overseerStatus)")
+        .accessibilityLabel("Overseer\(chat.unread ? ", unread report" : ""). \(overseerStatus)")
         .accessibilityAddTraits(showing ? .isSelected : [])
     }
 
     private var overseerStatus: String {
         if chat.isAsking { return "Answering..." }
+        if !chat.watching.isEmpty && chat.card == nil {
+            return "Waiting for \(chat.watching.count == 1 ? chat.watching[0].place.title : "\(chat.watching.count) sessions")..."
+        }
         if let card = chat.card { return card.isGoTo ? "Waiting for your Go" : "Waiting for your Send" }
         if let last = chat.conversation.messages.last(where: { $0.role != .note }) {
             return SessionText.oneLine(last.role == .user ? "You: " + last.text : AnswerText.plain(last.text))

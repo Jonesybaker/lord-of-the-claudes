@@ -10,6 +10,7 @@ final class PermissionQueue: ObservableObject {
         let origin: Origin
         /// Why no auto-approve rule took it, when one for its tool is on.
         var note: String? = nil
+        let at = Date()
     }
 
     /// Where a request came from, worked out when it arrived.

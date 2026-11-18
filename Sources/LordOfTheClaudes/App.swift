@@ -22,10 +22,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.applicationIconImage = AppIcon.make()
         store = Store()
-        let model = WindowModel(store: store, chat: .shared)
+        let model = WindowModel(store: store, chat: .shared, reader: ClaudeSessionReader())
         model.chat.sweepAttachments()
         window = MainWindow(model: model)
-        statusItem = StatusItem(store: store, toggle: { [weak self] in self?.window.toggle() },
+        statusItem = StatusItem(store: store, chat: model.chat, toggle: { [weak self] in self?.window.toggle() },
                                 show: { [weak self] in self?.window.show() })
         menu = MainMenu(model: model, window: window)
         menu.install()

@@ -19,10 +19,11 @@ enum Screenshots {
             Shot(name: "window-light", appearance: .aqua, grouping: .window, chat: { _ in questionChat() }),
             Shot(name: "window-overseer", appearance: .darkAqua, chat: { sendChat(places: $0) }),
             Shot(name: "window-goto", appearance: .aqua, chat: { goToChat(places: $0) }),
+            Shot(name: "window-follow-up", appearance: .darkAqua, chat: { followUpChat(places: $0) }),
             Shot(name: "window-image", appearance: .aqua, chat: { imageChat(places: $0) }),
             Shot(name: "window-session", appearance: .darkAqua, pane: .session("2")),
             Shot(name: "window-reply", appearance: .aqua, pane: .session("1"),
-                 drafts: ["1": "log the random seed on every run, then run it 50 times"]),
+                 drafts: ["1": "log the random seed on every run, then run it 50 times"], threads: ["1": demoThread]),
             Shot(name: "window-broadcast", appearance: .darkAqua,
                  broadcast: BroadcastDraft(groupId: "topic:checkout", text: "rebase on main and run the tests",
                                            confirming: true, recipients: ["1", "4"])),
@@ -39,6 +40,7 @@ enum Screenshots {
             model.pane = shot.pane
             if case .session(let id) = shot.pane { model.selection = id }
             model.drafts = shot.drafts
+            model.threads = shot.threads
             model.broadcast = shot.broadcast
             model.overlayOpen = shot.overlay
             let window = MainWindow.makeWindow()
@@ -75,11 +77,22 @@ enum Screenshots {
         var grouping: Grouping = .topic
         var pane: MainPane = .chat
         var drafts: [String: String] = [:]
+        var threads: [String: ReplyThread] = [:]
         var broadcast: BroadcastDraft?
         var chat: ((_ places: [SessionPlace]) -> OverseerChat)?
         var width: CGFloat = Screenshots.size.width
         var overlay = false
     }
+
+    /// The checkout session's last exchange, as its page shows it above the reply box.
+    private static let demoThread = ReplyThread(exchanges: [
+        Exchange(prompt: "the checkout test fails one run in ten, find out why", answer: """
+            Found it. The basket fixture builds a discount with `Math.random()` and no seed, so about one run in ten \
+            the total crosses the £50 free delivery threshold and the expected total is wrong.
+
+            I can log the seed on every run so a failure can be replayed, or fix the seed. Should I log it?
+            """),
+    ])
 
     /// Three rules on, one directory kept private, and a morning of made-up approvals.
     private static func demoApprovals() -> AutoApprovals {

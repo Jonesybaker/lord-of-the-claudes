@@ -57,6 +57,33 @@ extension Screenshots {
         return OverseerChat(demo: messages, card: card)
     }
 
+    /// Two prompts sent: one session still being waited on, the other's answer reported back with its question.
+    @MainActor
+    static func followUpChat(places: [SessionPlace]) -> OverseerChat {
+        let messages = [
+            OverseerMessage(role: .user, text: "tell the checkout one to rebase on main and run the tests"),
+            OverseerMessage(role: .overseer, text: "I would send this to [Fix flaky checkout test](session:Shop/2)."),
+            OverseerMessage(role: .note, text: "Sent to Shop, tab 2 (Fix flaky checkout test)."),
+            OverseerMessage(role: .user, text: "and tell the invoice one to add a test for an invoice with 21 lines"),
+            OverseerMessage(role: .overseer, text: "I would send this to [Invoice PDF rounding bug](session:Platform/2)."),
+            OverseerMessage(role: .note, text: "Sent to Platform, tab 2 (Invoice PDF rounding bug)."),
+            OverseerMessage(role: .note, text: "Platform, tab 2 (Invoice PDF rounding bug) has answered."),
+            OverseerMessage(role: .overseer, text: """
+                [Invoice PDF rounding bug](session:Platform/2) added the 21-line test, and it fails as expected: the VAT \
+                comes to £210.00 where it should be £209.99, because VAT is rounded on each line and then added up. \
+                It has not changed the code yet and asks which fix you want:
+
+                1. Round the VAT once, on the invoice total
+                2. Keep rounding per line and put the penny on the last line
+                3. Round per line and show a rounding line on the PDF
+
+                It recommends 1. Which should it do?
+                """),
+        ]
+        let waiting = places.first { $0.rowId == "1" }.map { [WatchedSession(place: $0, prompt: "rebase on main and run the tests")] } ?? []
+        return OverseerChat(demo: messages, watching: waiting)
+    }
+
     /// A screenshot pasted into a message, then a prompt proposed with it, waiting for Send.
     @MainActor
     static func imageChat(places: [SessionPlace]) -> OverseerChat {

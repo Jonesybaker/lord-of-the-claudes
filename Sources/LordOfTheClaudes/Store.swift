@@ -599,14 +599,6 @@ final class Store: ObservableObject {
         return sent
     }
 
-    /// Sends one prompt to each of these sessions. Returns how many took it.
-    @discardableResult
-    func broadcast(_ text: String, toSessions ids: [String]) async -> Int {
-        var sent = 0
-        for id in ids where await send(text, toSession: id) { sent += 1 }
-        return sent
-    }
-
     private func save() {
         guard !isDemo, !Sandbox.isOn else { return }
         let encoder = JSONEncoder()
