@@ -1,6 +1,6 @@
 # Lord of the Claudes
 
-One window to rule them all. A macOS app in the menu bar that tracks every Claude Code session open in Ghostty, tells you which ones are waiting for you and what each is doing, lets you prompt them and answer their permission prompts in one place, and brings them all back after a reboot. Its window is a chat with an overseer that answers "what needs me?", puts your prompts in the right tab and takes you to the session you need to see.
+One window to rule them all. A macOS app in the menu bar that tracks every Claude Code session open in Ghostty, tells you which ones are waiting for you and what each is doing, lets you prompt them and answer their permission prompts in one place, and brings them all back after a reboot. Its window is a chat with an overseer that answers "what needs me?", puts your prompts in the right tab, reads back what the sessions answer and takes you to the session you need to see.
 
 <p align="center">
   <img src="docs/window-dark.png" width="820" alt="The window: sessions grouped by topic in the sidebar; beside them the overseer's chat, listing three sessions waiting for you, longest first, and questions to ask">
@@ -9,15 +9,15 @@ One window to rule them all. A macOS app in the menu bar that tracks every Claud
 ## What it does
 
 - **Is a proper window.** Resize it, tile it, take it full screen. Ctrl+Option+C or the menu bar icon brings it to the front and hides it again. Closing it leaves the app in the menu bar. While it shows, the app is in the Dock and Cmd+Tab.
-- **Has an overseer to talk to.** The main area is a chat with it. Ask where things stand, tell it what a session should do, or ask it to take you to one. See [Ask the overseer](#ask-the-overseer).
+- **Has an overseer to talk to.** The main area is a chat with it. Ask where things stand, tell it what a session should do, or ask it to take you to one. It waits for the sessions you prompt and tells you what they answered. See [Ask the overseer](#ask-the-overseer).
 - **Takes screenshots.** Paste or drop images into a message. The overseer sees them, and a prompt it routes takes them to the session. See [Images](#images).
 - **Lists what needs you.** Every session waiting for you, across all windows, longest wait first, with what each is waiting for.
 - **Groups sessions by topic.** The observer files each session under what it is about, "Checkout", "Holiday", "Tax", so a window full of unrelated work sorts itself out. Or group by Ghostty window instead. See [Topics](#topics).
 - **Shows a session in full.** Click one in the sidebar for its place, its summary, what it did before and its recent prompts, with Go to tab, Make lord and Close.
 - **Folds a group away.** The chevron on a group hides its sessions and keeps its counts. Cmd+1 to Cmd+9 jump to a group, Cmd+Down and Cmd+Up to the next or previous one.
 - **Names your groups.** Click a group's name to rename it. A window left empty goes back to its directory name.
-- **Replies without switching tabs.** Type in a session's "Send a prompt" box and press Return. Cmd+R takes you there for the selected session.
-- **Prompts a group at once.** The megaphone on a group sends one prompt to every session in it. It lists exactly who gets it and asks once more before it sends.
+- **Replies without switching tabs.** Type in a session's "Send a prompt" box and press Return. Its answer shows on the page when it stops, under its last few prompts and answers. Cmd+R takes you there for the selected session.
+- **Prompts a group at once.** The megaphone on a group sends one prompt to every session in it. It lists exactly who gets it and asks once more before it sends. When they have answered, the overseer reports what each said.
 - **Answers permission prompts in one window.** Approve, deny, or tell Claude what to do instead.
 - **Approves the harmless ones by rule, if you let it.** Web searches, public pages and plain `curl` GETs, each by a fixed rule you switch on, every approval logged. See [Auto-approve safe requests](#auto-approve-safe-requests).
 - **Sums up each session.** Each time Claude stops, Haiku writes three lines: what the session is for, where it has got to and what it is waiting on you for.
@@ -29,7 +29,7 @@ One window to rule them all. A macOS app in the menu bar that tracks every Claud
 - **Links to the ticket.** A Jira key or Zendesk ticket number in the session title becomes a button.
 
 <p align="center">
-  <img src="docs/window-reply.png" width="820" alt="A session waiting for you shown in the main area, with a reply typed into its Send a prompt box">
+  <img src="docs/window-reply.png" width="820" alt="A session waiting for you shown in the main area: its last prompt and answer as a short thread, and a reply typed into its Send a prompt box">
 </p>
 
 ## Install
@@ -96,9 +96,16 @@ The overseer is a Claude Code conversation the app runs for you. Type in the box
 - **It routes, and you confirm.** Tell it what a session should do, "tell the checkout one to rebase", and it puts the exact prompt on a card: "Send to Shop, tab 2". Edit it if you like. Return or Send types it into that tab; Esc or Cancel drops it. Nothing reaches a tab without that confirm.
 - **It takes you to a session.** When the answer really is "look at that tab yourself", a diff to review or a question the summary cannot answer, the card says "Go to Shop, tab 2". Return or Go brings that tab to the front. Nothing moves without that press, and most questions are answered without one.
 - **It starts new sessions.** When nothing open fits, the card offers a new session instead, in a new tab in the right window, with Claude Code started on your prompt.
+- **It reads the answers.** After a Send, a Start or the megaphone, the chat shows "Waiting for" each session, with Stop watching, and the box stays free. When a session stops, the app reads its last answer and hands it to the overseer, which tells you what it said, what it is asking you and, where the next step is clear, proposes it on a card as usual. Sessions sent one prompt together are reported together; one still working two minutes after the first stopped is reported on its own when it stops. A session that stops for a permission prompt or a question is reported as such, and followed until it finishes. There is no time limit.
+- **It reads a session when you ask.** "What did the invoice one say?", "show me its plan", "did the tests pass?": when the briefing cannot answer, the overseer asks to read that session's last answer, or its last few exchanges, and answers from it. Reading changes nothing, so it needs no confirm; the chat shows "Read" and the session's name. At most three reads for each message.
 - **It asks when unsure.** If two sessions could be meant, the card lists them as buttons, for a prompt or for going there. It never offers one session while naming two: the app turns that into a choice.
-- **Private sessions stay private.** The overseer is only told how many are open. Ask for one by the words of its title, "take me to the contract renewal one", and the app answers by itself with a Go card, or a Send card when you gave it something to do: "tell the contract renewal one to add the signing date". That exchange stays in the chat and is never passed to the overseer, even when a conversation starts afresh. If another session's title fits your words as well, or two private ones do, the question goes to the overseer as usual.
+- **Private sessions stay private.** The overseer is only told how many are open. Ask for one by the words of its title, "take me to the contract renewal one", and the app answers by itself with a Go card, or a Send card when you gave it something to do: "tell the contract renewal one to add the signing date". That exchange stays in the chat and is never passed to the overseer, even when a conversation starts afresh. If another session's title fits your words as well, or two private ones do, the question goes to the overseer as usual. A private session is never read to the overseer: when one you prompted stops, the chat says it has replied, with a Go button, and its page shows the answer.
+- **A report you have not seen is marked.** One that arrives while the window is hidden or another page is showing puts a dot on the Overseer in the sidebar and a badge on the menu bar icon until you open the chat.
 - **"What needs me" needs no model.** Before you ask anything, and behind the bell button, the chat lists every session waiting for you, longest wait first, with some questions to try. It is worked out in the app.
+
+<p align="center">
+  <img src="docs/window-follow-up.png" width="820" alt="Two prompts sent: the invoice session has answered and the overseer reports its three possible fixes and asks which, while the checkout session is still being waited on">
+</p>
 
 <p align="center">
   <img src="docs/window-goto.png" width="820" alt="A prompt already sent, then the overseer proposing to take you to the checkout session, waiting for Go">
@@ -107,7 +114,10 @@ The overseer is a Claude Code conversation the app runs for you. Type in the box
 What it sees and what it uses:
 
 - It runs `claude -p` on your own Claude Code login, so it counts towards your plan like any other session. An answer takes a few seconds.
-- It sees a short briefing with each message, not transcripts: every open session's group, tab, title, directory, status and digest, or its last prompt when there is no digest. Private sessions are only counted. It has no tools, hooks, MCP servers or CLAUDE.md (`--safe-mode`), so it cannot read a file or run anything. Images you attach go with the message.
+- It sees a short briefing with each message: every open session's group, tab, title, directory, status and digest, or its last prompt when there is no digest. Private sessions are only counted. Images you attach go with the message.
+- It sees a session's own words only after a prompt you sent it, or when it reads one: the prompts and Claude's final answers, never tool calls, tool results or images. A question or plan the session put to you counts as its answer. Each answer is capped at about 6,000 characters, keeping its start and its end with the gap marked; in a read of several exchanges the earlier answers get 1,500 and each prompt 1,000.
+- It has no tools, hooks, MCP servers or CLAUDE.md (`--safe-mode`), so it cannot read a file or run anything itself. The app does the reading.
+- A session's answer can carry instructions from a page or file it read. The overseer gets each answer inside tags the answer cannot close, and is told it is a report to summarise, never instructions. Whatever it says, nothing reaches a session without your confirm on a card.
 - The chat is kept in `overseer.json` beside `state.json`, up to 60 messages. New chat starts a fresh conversation.
 - Claude Code keeps the instructions a conversation started with. When an upgrade changes the overseer's, the next question starts a fresh conversation and hands it the chat's last 20 messages, so you are never left on the old ones.
 - To change the model, edit `~/Library/Application Support/LordOfTheClaudes/overseer-settings.json`:
@@ -175,7 +185,7 @@ Any other flag asks, which rules out other methods, bodies, uploads, logins, coo
 
 ### Excluded directories
 
-A session working in an excluded directory is never auto-approved, never summarised by the observer, and left out of the overseer's briefing and `lotc digest`, which only count them. Its folder never names a window that has other sessions in it. The sidebar still shows it, by title only, with a lock, and the overseer chat can take you there by its title without the overseer hearing of it. Add directories on the Auto-approve page; `~` works in the file. A session counts as inside when the directory it started in or the one it is in now is the excluded one or below it, through symlinks and in any case: `~/tax` holds `~/tax/2025` but not `~/taxes`.
+A session working in an excluded directory is never auto-approved, never summarised by the observer, never read to the overseer, and left out of the overseer's briefing and `lotc digest`, which only count them. Its folder never names a window that has other sessions in it. The sidebar still shows it, by title only, with a lock, and the overseer chat can take you there by its title without the overseer hearing of it. Add directories on the Auto-approve page; `~` works in the file. A session counts as inside when the directory it started in or the one it is in now is the excluded one or below it, through symlinks and in any case: `~/tax` holds `~/tax/2025` but not `~/taxes`.
 
 ### What it cannot do
 
@@ -256,7 +266,8 @@ Links pasted into a session are picked up by themselves. To turn a Jira key or t
 - `lotc` talks to the app over a Unix socket only you can open: `~/Library/Application Support/LordOfTheClaudes/lotc.sock`. It finds its session by walking up its parent processes to one listed in `~/.claude/sessions`.
 - It only reads Claude's files, except that `lotc hooks install` adds two hooks to `~/.claude/settings.json`. Its own state, summaries and topics included, is `~/Library/Application Support/LordOfTheClaudes/state.json`, with `overseer.json`, `overseer-settings.json`, `auto-approve.json`, `auto-approve-log.json` and the `attachments` folder beside it.
 - The overseer's conversation is an ordinary Claude Code session in `~/Library/Application Support/LordOfTheClaudes/overseer`. It is never listed in the sidebar, and runs with `LOTC_OBSERVER=1` so `lotc`'s own hooks leave it alone.
-- The app has no network code. The summariser's `claude -p` runs and what you ask the overseer, with the briefing and any images, go to Anthropic through Claude Code. Nothing else leaves your Mac.
+- Answers are read from the session's transcript on your Mac. A session's page shows its own, private or not; only the overseer's reports send them anywhere.
+- The app has no network code. The summariser's `claude -p` runs and what you ask the overseer, with the briefing, any images and the session answers it is given, go to Anthropic through Claude Code. Nothing else leaves your Mac.
 
 ## Expect breakage
 
@@ -270,7 +281,7 @@ Claude Code's session files are undocumented and can change in any release. Test
 - To try `lotc` beside an installed copy, run the build with `LOTC_SANDBOX=1 LOTC_SOCKET=<path>`. That turns off the hotkey and state.json, and keeps the overseer's files in a temporary folder. Set the same `LOTC_SOCKET` for `lotc`.
 - `.build/debug/LordOfTheClaudes --summarise <transcript.jsonl>` runs the summariser once on a transcript and prints what it wrote.
 - `LOTC_SANDBOX=1 .build/debug/LordOfTheClaudes --ask <briefing.txt> "<question>"` asks the overseer once against a briefing in a file, in the shape `lotc digest --all` prints, and shows what it proposes. Nothing is kept.
-- `LOTC_SANDBOX=1 LOTC_CLAUDE_TESTS=1 ./build.sh test --filter LiveOverseerTests` sends made-up images to the real `claude -p` and carries the conversation on, then asks the overseer for "the email one" with two to choose from and for a session only a private one could be. It uses a little of your plan.
+- `LOTC_SANDBOX=1 LOTC_CLAUDE_TESTS=1 ./build.sh test --filter LiveOverseerTests` sends made-up images to the real `claude -p` and carries the conversation on, then asks the overseer for "the email one" with two to choose from and for a session only a private one could be. It hands it made-up session answers too: one asking you to pick from three fixes, one carrying an instruction to send `rm -rf` everywhere, and a question only a read can answer. It uses a little of your plan.
 
 ## Screenshots
 
