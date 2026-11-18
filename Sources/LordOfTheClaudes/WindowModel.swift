@@ -8,14 +8,37 @@ enum MainPane: Equatable {
     case autoApprove
 }
 
+/// A session's latest prompts and answers on its page, read from its transcript. Shown here only, never to a model.
+struct ReplyThread: Equatable {
+    static let length = 3
+
+    var exchanges: [Exchange] = []
+    /// A reply went in and the session has not stopped since.
+    var waiting = false
+    /// Why it stopped short of an answer: what it waits on, or that it closed.
+    var stoppedFor: String?
+}
+
+/// Types a prompt into a session: the store, or a test's stand-in.
+typealias PromptTypist = @MainActor (_ text: String, _ images: [AttachedImage], _ sessionId: String) async -> Bool
+
 /// The main window's state and actions, apart from its views, so the keys, the menus and the menu bar
 /// icon can all drive it. Focus stays in the view: this asks for it through `focusRequests`.
 @MainActor
 final class WindowModel: ObservableObject {
     let store: Store
     let chat: OverseerChat
+    /// Reads a session's thread and waits on its replies. Nil reads nothing: the screenshots and tests that need none.
+    let reader: SessionReading?
+    private let poll: Duration
+    private let typist: PromptTypist
 
-    @Published var pane: MainPane = .chat
+    @Published var pane: MainPane = .chat { didSet { chatShows() } }
+    /// The window is on screen, not hidden or in the Dock.
+    @Published var windowVisible = false { didSet { chatShows() } }
+    /// Each session's thread on its page, by session id.
+    @Published var threads: [String: ReplyThread] = [:]
+    private var replyWatches: [String: Task<Void, Never>] = [:]
     /// The highlighted row: picked with the arrows or a click. Nil highlights nothing, except a filter's first match.
     @Published var selection: String?
     @Published var query = "" { didSet { if query != oldValue { selection = nil } } }
@@ -61,10 +84,14 @@ final class WindowModel: ObservableObject {
     /// Nil `defaults` remembers nothing: the screenshots and tests.
     private let defaults: UserDefaults?
 
-    init(store: Store, chat: OverseerChat, defaults: UserDefaults? = .standard) {
+    init(store: Store, chat: OverseerChat, defaults: UserDefaults? = .standard, reader: SessionReading? = nil,
+         poll: Duration = .seconds(1), typist: PromptTypist? = nil) {
         self.store = store
         self.chat = chat
         self.defaults = defaults
+        self.reader = reader
+        self.poll = poll
+        self.typist = typist ?? { [store] text, images, id in await store.send(text, images: images, toSession: id) }
         grouping = defaults?.string(forKey: Keys.grouping).flatMap(Grouping.init(rawValue:)) ?? .topic
         sidebarShown = defaults?.object(forKey: Keys.sidebarShown) as? Bool ?? true
         let width = defaults?.double(forKey: Keys.sidebarWidth) ?? 0
@@ -235,13 +262,59 @@ final class WindowModel: ObservableObject {
         replyAttachments[row.id] = nil
         replyNotes[row.id] = SendNote(outcome: .sending, text: "Sending...")
         Task {
-            let sent = await store.send(text, images: images, toSession: row.id)
+            let at = Date()
+            let sent = await typist(text, images, row.id)
             if !sent && drafts[row.id, default: ""].isEmpty { drafts[row.id] = text }  // give the words back
             if !sent && replyAttachments[row.id] == nil && !images.isEmpty { replyAttachments[row.id] = images }
             replyNotes[row.id] = sent ? SendNote(outcome: .sent, text: "Sent.")
                                       : SendNote(outcome: .failed, text: "Could not find its tab. Nothing was sent.")
             announce(replyNotes[row.id])
+            if sent { awaitAnswer(of: row, since: at) }
         }
+    }
+
+    // MARK: A session's thread
+
+    /// Reads its latest exchanges from its transcript, private or not: they are shown here and go nowhere else.
+    func refreshThread(_ row: Row) async {
+        guard let reader else { return }
+        let exchanges = await reader.exchanges(of: row.id, cwd: row.cwd, last: ReplyThread.length)
+        threads[row.id, default: ReplyThread()].exchanges = exchanges
+    }
+
+    /// Waits, as `lotc wait` does, for the turn the reply started, then shows its answer in place.
+    private func awaitAnswer(of row: Row, since sentAt: Date) {
+        guard let reader else { return }
+        replyWatches[row.id]?.cancel()
+        threads[row.id, default: ReplyThread()].waiting = true
+        threads[row.id]?.stoppedFor = nil
+        let id = row.id
+        let task = Task { [weak self, poll] in
+            await self?.refreshThread(row)  // the prompt shows at once
+            let outcome = await TurnWatch.wait(sentAt: sentAt, every: poll) { await reader.status(of: id) }
+            guard let self, !Task.isCancelled, outcome != .cancelled else { return }
+            // The transcript can lag the status by a moment.
+            for attempt in 0..<3 {
+                await refreshThread(row)
+                if threads[id]?.exchanges.last?.answer.isEmpty == false || attempt == 2 { break }
+                try? await Task.sleep(for: poll)
+            }
+            guard !Task.isCancelled else { return }
+            threads[id]?.waiting = false
+            switch outcome {
+            case .finished(let status): threads[id]?.stoppedFor = status.stoppedFor.map { "It is waiting for you: \($0)." }
+            case .closed: threads[id]?.stoppedFor = "It closed before it answered."
+            default: break
+            }
+            replyWatches[id] = nil
+            AccessibilityNotification.Announcement(threads[id]?.stoppedFor ?? "\(row.title) has answered.").post()
+        }
+        replyWatches[id] = task
+    }
+
+    func stopWaitingForAnswer(of id: String) {
+        replyWatches.removeValue(forKey: id)?.cancel()
+        threads[id]?.waiting = false
     }
 
     func move(_ row: Row, toTopic topic: String) { store.move(row.id, toTopic: topic) }
@@ -325,8 +398,19 @@ final class WindowModel: ObservableObject {
         broadcast?.sending = true
         let recipients = draft.recipients
         Task {
-            let sent = await store.broadcast(text, toSessions: recipients)
+            var reached: [(id: String, at: Date)] = []
+            for id in recipients {
+                let at = Date()
+                if await typist(text, [], id) { reached.append((id, at)) }
+            }
+            let sent = reached.count
             let total = recipients.count
+            // Each recipient is waited on and the overseer reports what they said; private ones only as having replied.
+            let places = store.overseerPlaces
+            let sends = reached.compactMap { send in
+                places.first { $0.rowId == send.id }.map { SentPrompt(place: $0, prompt: text, at: send.at) }
+            }
+            chat.follow(sends, broadcast: group.name, host: store)
             groupNotes[group.id] = switch sent {
             case total: SendNote(outcome: .sent, text: "Sent to all \(total) sessions.")
             case 0: SendNote(outcome: .failed, text: "Could not find their tabs. Nothing was sent.")
@@ -343,6 +427,7 @@ final class WindowModel: ObservableObject {
     /// Coming back from hidden starts at the chat with a clean slate, as the menu bar panel did.
     /// Brought forward while open, it keeps what it was showing.
     func windowShown(fromHidden: Bool) {
+        windowVisible = true
         if fromHidden {
             pane = .chat
             query = ""
@@ -359,6 +444,11 @@ final class WindowModel: ObservableObject {
         }
         if pane == .chat { focusRequests.send(.composer) }
     }
+
+    func windowHidden() { windowVisible = false }
+
+    /// A report on what sessions said is unread until the chat is on screen.
+    private func chatShows() { chat.onScreen = windowVisible && pane == .chat }
 
     /// Reads a send's outcome out to VoiceOver, as it appears under a field the user may have left.
     private func announce(_ note: SendNote?) {

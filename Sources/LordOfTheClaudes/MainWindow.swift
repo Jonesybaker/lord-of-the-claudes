@@ -26,6 +26,15 @@ final class MainWindow: NSObject, NSWindowDelegate {
         window.contentViewController = host
         window.setFrame(placement.frame(screens: Self.screens), display: false)
         window.delegate = self
+        // Cmd+H and the Dock hide it without `hide()`; a report arriving meanwhile is unread.
+        for (name, visible) in [(NSApplication.didHideNotification, false), (NSApplication.didUnhideNotification, true)] {
+            NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    self.model.windowVisible = visible && self.window.isVisible && !self.window.isMiniaturized
+                }
+            }
+        }
         activations = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
         ) { [weak self] note in
@@ -78,6 +87,7 @@ final class MainWindow: NSObject, NSWindowDelegate {
         }
         placement.save(window.frame)
         window.orderOut(nil)
+        model.windowHidden()
         NSApp.setActivationPolicy(.accessory)
         if NSApp.isActive, let previousApp, !previousApp.isTerminated { previousApp.activate() }
     }
@@ -94,6 +104,9 @@ final class MainWindow: NSObject, NSWindowDelegate {
         hideAfterFullScreen = false
         hide()
     }
+
+    func windowDidMiniaturize(_ notification: Notification) { model.windowHidden() }
+    func windowDidDeminiaturize(_ notification: Notification) { model.windowVisible = !NSApp.isHidden }
 
     func windowDidMove(_ notification: Notification) { remember() }
     func windowDidEndLiveResize(_ notification: Notification) { remember() }

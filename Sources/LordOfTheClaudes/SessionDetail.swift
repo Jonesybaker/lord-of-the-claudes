@@ -1,7 +1,8 @@
 import LotcKit
 import SwiftUI
 
-/// One session in the main area: where it is, what it is doing, what it did, its prompts and a reply box.
+/// One session in the main area: where it is, what it is doing, what it did, its latest prompts and answers,
+/// and a reply box.
 struct SessionDetail: View {
     let row: Row
     @ObservedObject var model: WindowModel
@@ -9,27 +10,42 @@ struct SessionDetail: View {
     @State private var dropping = false
 
     private var place: String { SessionText.place(row, windowNames: model.windowNames) }
+    private static let bottomId = "thread-bottom"
+    /// Read again whenever it starts or stops work.
+    private var threadKey: String { "\(row.id) \(row.status ?? "closed") \(row.statusSince?.timeIntervalSince1970 ?? 0)" }
 
     var body: some View {
         VStack(spacing: 0) {
             header
             Divider()
-            ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    title
-                    actions
-                    if let digest = row.digest {
-                        section("Summary") { DigestView(digest: digest) }
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 18) {
+                        title
+                        actions
+                        if let digest = row.digest {
+                            section("Summary") { DigestView(digest: digest) }
+                        }
+                        let earlier = Array(row.digestHistory.filter { $0 != row.digest }.reversed())
+                        if !earlier.isEmpty {
+                            section("Earlier") { DigestHistory(steps: earlier) }
+                        }
+                        if let thread = model.threads[row.id], !thread.exchanges.isEmpty || thread.waiting {
+                            section("Conversation") {
+                                ReplyThreadView(thread: thread, stop: { model.stopWaitingForAnswer(of: row.id) })
+                            }
+                        } else {
+                            section("Recent prompts") { prompts }
+                        }
+                        Color.clear.frame(height: 1).id(Self.bottomId)
                     }
-                    let earlier = Array(row.digestHistory.filter { $0 != row.digest }.reversed())
-                    if !earlier.isEmpty {
-                        section("Earlier") { DigestHistory(steps: earlier) }
-                    }
-                    section("Recent prompts") { prompts }
+                    .readingColumn()
+                    .padding(.vertical, 16)
                 }
-                .readingColumn()
-                .padding(.vertical, 16)
+                // A reply going in, and its answer coming back, bring the end of the thread into view.
+                .onChange(of: model.threads[row.id]?.waiting) { proxy.scrollTo(Self.bottomId, anchor: .bottom) }
             }
+            .task(id: threadKey) { await model.refreshThread(row) }
             if row.isLive {
                 VStack(alignment: .leading, spacing: 4) {
                     MessageBox(placeholder: "Send a prompt to this session", text: model.replyText(for: row.id),
@@ -167,6 +183,58 @@ private struct ReplyDrops: ViewModifier {
 
     func body(content: Content) -> some View {
         if takes { content.takesDroppedImages(into: images, isTargeted: $dropping) } else { content }
+    }
+}
+
+/// A session's latest prompts and answers, oldest first, above its reply box: its own transcript, read on this Mac.
+struct ReplyThreadView: View {
+    let thread: ReplyThread
+    let stop: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            ForEach(Array(thread.exchanges.enumerated()), id: \.offset) { _, exchange in
+                if let prompt = exchange.prompt {
+                    HStack {
+                        Spacer(minLength: 60)
+                        Text(prompt)
+                            .lineLimit(8)
+                            .textSelection(.enabled)
+                            .padding(.horizontal, 12).padding(.vertical, 7)
+                            .background(RoundedRectangle(cornerRadius: 12).fill(Color.accentColor.opacity(0.18)))
+                            .accessibilityLabel("You: \(prompt)")
+                    }
+                }
+                if !exchange.answer.isEmpty {
+                    let answer = SessionAnswers.capped(exchange.answer)
+                    Text(Self.readable(answer))
+                        .textSelection(.enabled)
+                        .lineSpacing(3)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityLabel("Claude: \(answer)")
+                }
+            }
+            if thread.waiting {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small)
+                    Text("Waiting for its answer...").foregroundStyle(.secondary)
+                    Spacer(minLength: 8)
+                    Button("Stop watching", action: stop)
+                        .buttonStyle(.link)
+                        .help("Stop waiting here. Nothing is sent to it.")
+                }
+                .font(.callout)
+                .accessibilityElement(children: .contain)
+            } else if let why = thread.stoppedFor {
+                Text(why).font(.callout).foregroundStyle(Color.waiting)
+            }
+        }
+    }
+
+    /// Its Markdown's bold, code and links, its line breaks kept.
+    private static func readable(_ text: String) -> AttributedString {
+        (try? AttributedString(markdown: text, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)))
+            ?? AttributedString(text)
     }
 }
 
