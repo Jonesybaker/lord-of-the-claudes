@@ -9,6 +9,8 @@ struct SessionPlace: Equatable, Sendable {
     let tab: Int?
     let title: String
     let cwd: String
+    /// In an excluded directory: the overseer is never told of it.
+    var isPrivate = false
 
     /// "Shop, tab 2", or "Other".
     var spot: String { tab.map { "\(group), tab \($0)" } ?? group }
@@ -90,28 +92,30 @@ enum TargetMatch {
 enum Proposal: Equatable {
     case send(targets: [ProposedTarget], prompt: String)
     case newSession(group: String?, cwd: String, prompt: String)
-    case choose(question: String?, candidates: [ProposedTarget], prompt: String)
-    /// Bring a session's tab to the front, for the user to look at themselves.
-    case goTo(target: ProposedTarget)
+    /// Which session: to send the prompt to, or with no prompt, to go to.
+    case choose(question: String?, candidates: [ProposedTarget], prompt: String?)
+    /// Bring a session's tab to the front, for the user to look at themselves. Several are a "which one?".
+    case goTo(targets: [ProposedTarget])
 
     static let goToActions: Set<String> = ["goto", "go_to", "go-to", "go"]
 
     init?(json: Any) {
-        guard let object = json as? [String: Any], let action = object["action"] as? String else { return nil }
+        guard let object = json as? [String: Any], let action = (object["action"] as? String)?.lowercased() else { return nil }
         let targets = { (key: String) in (object[key] as? [Any] ?? []).compactMap(ProposedTarget.init(json:)) }
-        if Self.goToActions.contains(action.lowercased()) {
-            guard let target = object["target"].flatMap(ProposedTarget.init(json:)) ?? targets("targets").first else { return nil }
-            self = .goTo(target: target)
+        let prompt = (object["prompt"] as? String)?.trimmedNonEmpty
+        if Self.goToActions.contains(action) {
+            let found = object["target"].flatMap(ProposedTarget.init(json:)).map { [$0] } ?? targets("targets")
+            guard !found.isEmpty else { return nil }
+            self = .goTo(targets: found)
             return
         }
-        guard let prompt = (object["prompt"] as? String)?.trimmedNonEmpty else { return nil }
         switch action {
         case "send":
             let found = targets("targets")
-            guard !found.isEmpty else { return nil }
+            guard let prompt, !found.isEmpty else { return nil }
             self = .send(targets: found, prompt: prompt)
         case "new":
-            guard let cwd = (object["cwd"] as? String)?.trimmedNonEmpty else { return nil }
+            guard let prompt, let cwd = (object["cwd"] as? String)?.trimmedNonEmpty else { return nil }
             self = .newSession(group: (object["group"] as? String)?.trimmedNonEmpty, cwd: cwd, prompt: prompt)
         case "choose":
             let found = targets("candidates")
@@ -120,6 +124,27 @@ enum Proposal: Equatable {
         default:
             return nil
         }
+    }
+
+    /// A go-to or send naming one session, under words that link two or more, is a guess: it becomes a
+    /// choice between them. The overseer is told to choose itself; this holds when it does not.
+    func checked(against text: String, places: [SessionPlace]) -> Proposal {
+        let target: ProposedTarget
+        let prompt: String?
+        switch self {
+        case .goTo(let targets) where targets.count == 1: (target, prompt) = (targets[0], nil)
+        case .send(let targets, let words) where targets.count == 1: (target, prompt) = (targets[0], words)
+        default: return self
+        }
+        var seen = Set<String>()
+        var linked = AnswerText.references(in: text).compactMap { reference -> SessionPlace? in
+            guard case .one(let place) = TargetMatch.find(reference, in: places) else { return nil }
+            return place
+        }.filter { seen.insert($0.rowId).inserted }
+        guard linked.count > 1 else { return self }
+        if case .one(let place) = TargetMatch.find(target, in: places), !seen.contains(place.rowId) { linked.insert(place, at: 0) }
+        return .choose(question: nil, candidates: linked.map { ProposedTarget(group: $0.group, tab: $0.tab, title: $0.title) },
+                       prompt: prompt)
     }
 }
 
@@ -176,15 +201,31 @@ struct OverseerAnswer: Equatable {
 enum AnswerText {
     static let scheme = "lotc-session"
 
+    private static var link: Regex<(Substring, label: Substring, reference: Substring)> {
+        #/\[(?<label>[^\]\n]+)\]\(session:(?<reference>[^)\n]*)\)/#
+    }
+
     /// Markdown in which every session the overseer named, and that is still running, links to
     /// lotc-session://<session id>. One it named that cannot be found keeps its words without a link.
     static func linked(_ text: String, places: [SessionPlace]) -> String {
-        text.replacing(#/\[(?<label>[^\]\n]+)\]\(session:(?<reference>[^)\n]*)\)/#) { match in
+        text.replacing(link) { match in
             let label = String(match.label)
             guard case .one(let place) = TargetMatch.find(ProposedTarget(reference: String(match.reference), label: label), in: places)
             else { return label }
             return "[\(label)](\(scheme)://\(place.rowId))"
         }
+    }
+
+    /// Every session the overseer linked, in order.
+    static func references(in text: String) -> [ProposedTarget] {
+        text.matches(of: link).map { ProposedTarget(reference: String($0.reference), label: String($0.label)) }
+    }
+
+    /// The words without a sentence promising the app will ask which session, for an answer no "which one?"
+    /// card follows. Unchanged when that sentence is all there is.
+    static func withoutPromisedChoice(_ text: String) -> String {
+        let promise = #/[^.!?\n]*\bthe app (?:will |would |can )?(?:asks?|let you (?:pick|choose))\b[^.!?\n]*[.!?]?/#.ignoresCase()
+        return text.replacing(promise, with: "").trimmingCharacters(in: .whitespacesAndNewlines).trimmedNonEmpty ?? text
     }
 
     /// The words alone, each link's text kept: for a one-line preview.

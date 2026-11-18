@@ -340,6 +340,33 @@ struct DigestBriefingTests {
         #expect(DigestBriefing.text([.init(name: "Other", rows: [])], now: now) == "No Claude Code sessions are open.")
     }
 
+    @Test func countsPrivateSessionsAndSaysNothingElseOfThem() {
+        var tax = row(2, "Tax return for the club shop")
+        tax.isPrivate = true
+        var payroll = row(nil, "Payroll export")
+        payroll.isPrivate = true
+        let text = DigestBriefing.text([.init(name: "Kit room", rows: [row(1, "Away kit"), tax]), .init(name: "Other", rows: [payroll])],
+                                       now: now, home: "/Users/fan")
+        #expect(text.hasPrefix("""
+            1 session in 1 window, 0 waiting for you.
+            2 private sessions are open that you cannot see. If the developer asks for a session you cannot find, \
+            say it may be one of those and that they can pick it in the sidebar.
+
+            ## Kit room
+            tab 1: Away kit [idle]
+            """))
+        #expect(!text.contains("Tax") && !text.contains("Payroll") && !text.contains("tab 2"))
+
+        let one = DigestBriefing.text([.init(name: "Kit room", rows: [row(1, "Away kit"), tax])], now: now)
+        #expect(one.contains("\n1 private session is open that you cannot see."))
+        #expect(DigestBriefing.text([.init(name: "Kit room", rows: [row(1, "Away kit")])], now: now).contains("private") == false)
+        #expect(DigestBriefing.text([.init(name: "Other", rows: [payroll])], now: now) == """
+            No Claude Code sessions you can see are open.
+            1 private session is open that you cannot see. If the developer asks for a session you cannot find, \
+            say it may be one of those and that they can pick it in the sidebar.
+            """)
+    }
+
     @MainActor @Test func theStoreBriefsEveryWindowItShows() {
         let digest = Digest(goal: "Plan the parade", state: "Route agreed", at: Date())
         let store = Store(demoRows: [row(1, "Parade", digest: digest)], groupNames: ["w": "United"])

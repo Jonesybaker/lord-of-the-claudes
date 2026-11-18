@@ -382,8 +382,11 @@ final class Store: ObservableObject {
         }
         let names = GroupNames.distinct(windows.map { window in
             let records = records(of: window.rows)
+            // The overseer is told this name, so a private session's folder names a window only when nothing else is in it.
+            let open = window.rows.filter { !$0.isPrivate }
             return (given: Self.commonest(records.compactMap(\.group)),
-                    usual: Self.commonest(window.rows.map { URL(fileURLWithPath: $0.cwd).lastPathComponent }) ?? "Sessions")
+                    usual: Self.commonest((open.isEmpty ? window.rows : open).map { URL(fileURLWithPath: $0.cwd).lastPathComponent })
+                        ?? "Sessions")
         })
         return zip(windows, names).map { window, name in
             Group(id: window.id, name: name, rows: window.rows, collapsed: Self.mostlyCollapsed(records(of: window.rows)))

@@ -128,7 +128,7 @@ extension Screenshots {
                 and the price service. The diff is in its tab, so that is the place to look.
                 """),
         ]
-        let card = RoutingCard.make(.goTo(target: ProposedTarget(group: "Shop", tab: 2, title: "Fix flaky checkout test")),
+        let card = RoutingCard.make(.goTo(targets: [ProposedTarget(group: "Shop", tab: 2, title: "Fix flaky checkout test")]),
                                     places: places)
         return OverseerChat(demo: messages, card: card)
     }
