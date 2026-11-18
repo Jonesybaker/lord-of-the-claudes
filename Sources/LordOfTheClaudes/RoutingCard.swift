@@ -22,6 +22,8 @@ struct RoutingCard: Identifiable, Equatable {
     var sending = false
     /// Images that go with the prompt, as file paths at its end. The user's, from the message that asked for it.
     var images: [AttachedImage] = []
+    /// Offered by the app for a private session, not by the overseer: what becomes of it is never told to the overseer.
+    var isPrivate = false
 
     var isArmed: Bool { Date().timeIntervalSince(shownAt) >= Self.armingDelay }
 
@@ -37,6 +39,15 @@ struct RoutingCard: Identifiable, Equatable {
     }
 
     var isGoTo: Bool { if case .goTo = kind { true } else { false } }
+
+    /// Lists sessions to pick from.
+    var asksWhich: Bool {
+        switch kind {
+        case .choose: true
+        case .goTo(let places, _): places.count > 1
+        default: false
+        }
+    }
 
     var headline: String {
         switch kind {
@@ -72,24 +83,24 @@ struct RoutingCard: Identifiable, Equatable {
             let windowId = group.flatMap { name in places.first { $0.group.caseInsensitiveCompare(name) == .orderedSame }?.windowId }
             return RoutingCard(kind: .newSession(cwd: (cwd as NSString).expandingTildeInPath, group: group, windowId: windowId),
                                prompt: prompt)
-        case .choose(let question, let candidates, let prompt):
-            let found = unique(candidates.flatMap { target -> [SessionPlace] in
-                switch TargetMatch.find(target, in: places) {
-                case .one(let place): return [place]
-                case .several(let several): return several
-                case .none: return []
-                }
-            })
+        case .choose(let question, let candidates, let prompt?):
+            let found = unique(candidates.flatMap { resolve($0, in: places) })
             if found.count == 1 { return RoutingCard(kind: .send(found, missing: []), prompt: prompt) }
             return RoutingCard(kind: found.isEmpty ? .send([], missing: candidates.map(describe))
                                                    : .choose(question: question ?? "Which session?", candidates: found),
                                prompt: prompt)
-        case .goTo(let target):
-            switch TargetMatch.find(target, in: places) {
-            case .one(let place): return RoutingCard(kind: .goTo([place], missing: []), prompt: "")
-            case .several(let candidates): return RoutingCard(kind: .goTo(unique(candidates), missing: []), prompt: "")
-            case .none: return RoutingCard(kind: .goTo([], missing: [describe(target)]), prompt: "")
-            }
+        case .choose(_, let targets, nil), .goTo(let targets):
+            let found = unique(targets.flatMap { resolve($0, in: places) })
+            return RoutingCard(kind: .goTo(found, missing: found.isEmpty ? targets.map(describe) : []), prompt: "")
+        }
+    }
+
+    /// Every running session a target could mean.
+    private static func resolve(_ target: ProposedTarget, in places: [SessionPlace]) -> [SessionPlace] {
+        switch TargetMatch.find(target, in: places) {
+        case .one(let place): [place]
+        case .several(let several): several
+        case .none: []
         }
     }
 
@@ -109,7 +120,7 @@ struct RoutingCard: Identifiable, Equatable {
 
     static func == (a: RoutingCard, b: RoutingCard) -> Bool {
         a.id == b.id && a.kind == b.kind && a.prompt == b.prompt && a.shownAt == b.shownAt && a.sending == b.sending
-            && a.images == b.images
+            && a.images == b.images && a.isPrivate == b.isPrivate
     }
 }
 

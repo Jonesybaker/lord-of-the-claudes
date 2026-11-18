@@ -11,13 +11,21 @@ enum DigestBriefing {
 
     static func text(_ groups: [Group], now: Date = Date(),
                      home: String = FileManager.default.homeDirectoryForCurrentUser.path) -> String {
-        // Private sessions are left out altogether: a model reads this.
+        // A model reads this, so private sessions are only counted.
+        let hidden = groups.flatMap(\.rows).filter(\.isPrivate).count
         let groups = groups.map { Group(name: $0.name, rows: $0.rows.filter { !$0.isPrivate }) }.filter { !$0.rows.isEmpty }
         let rows = groups.flatMap(\.rows)
-        guard !rows.isEmpty else { return "No Claude Code sessions are open." }
+        let unseen = hidden == 0 ? [] : [
+            "\(count(hidden, "private session")) \(hidden == 1 ? "is" : "are") open that you cannot see. If the developer "
+                + "asks for a session you cannot find, say it may be one of those and that they can pick it in the sidebar.",
+        ]
+        guard !rows.isEmpty else {
+            return ([hidden == 0 ? "No Claude Code sessions are open." : "No Claude Code sessions you can see are open."] + unseen)
+                .joined(separator: "\n")
+        }
         let waiting = rows.filter(\.needsYou).count
         let summary = "\(count(rows.count, "session")) in \(count(groups.count, "window")), \(waiting) waiting for you."
-        return ([summary] + groups.map { group in
+        return ([summary] + unseen + groups.map { group in
             (["", "## " + group.name] + group.rows.flatMap { session($0, now: now, home: home) }).joined(separator: "\n")
         }).joined(separator: "\n")
     }

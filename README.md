@@ -96,7 +96,8 @@ The overseer is a Claude Code conversation the app runs for you. Type in the box
 - **It routes, and you confirm.** Tell it what a session should do, "tell the checkout one to rebase", and it puts the exact prompt on a card: "Send to Shop, tab 2". Edit it if you like. Return or Send types it into that tab; Esc or Cancel drops it. Nothing reaches a tab without that confirm.
 - **It takes you to a session.** When the answer really is "look at that tab yourself", a diff to review or a question the summary cannot answer, the card says "Go to Shop, tab 2". Return or Go brings that tab to the front. Nothing moves without that press, and most questions are answered without one.
 - **It starts new sessions.** When nothing open fits, the card offers a new session instead, in a new tab in the right window, with Claude Code started on your prompt.
-- **It asks when unsure.** If two sessions could be meant, the card lists them as buttons.
+- **It asks when unsure.** If two sessions could be meant, the card lists them as buttons, for a prompt or for going there. It never offers one session while naming two: the app turns that into a choice.
+- **Private sessions stay private.** The overseer is only told how many are open. Ask for one by the words of its title, "take me to the contract renewal one", and the app answers by itself with a Go card, or a Send card when you gave it something to do: "tell the contract renewal one to add the signing date". That exchange stays in the chat and is never passed to the overseer, even when a conversation starts afresh. If another session's title fits your words as well, or two private ones do, the question goes to the overseer as usual.
 - **"What needs me" needs no model.** Before you ask anything, and behind the bell button, the chat lists every session waiting for you, longest wait first, with some questions to try. It is worked out in the app.
 
 <p align="center">
@@ -106,7 +107,7 @@ The overseer is a Claude Code conversation the app runs for you. Type in the box
 What it sees and what it uses:
 
 - It runs `claude -p` on your own Claude Code login, so it counts towards your plan like any other session. An answer takes a few seconds.
-- It sees a short briefing with each message, not transcripts: every open session's group, tab, title, directory, status and digest, or its last prompt when there is no digest. It has no tools, hooks, MCP servers or CLAUDE.md (`--safe-mode`), so it cannot read a file or run anything. Images you attach go with the message.
+- It sees a short briefing with each message, not transcripts: every open session's group, tab, title, directory, status and digest, or its last prompt when there is no digest. Private sessions are only counted. It has no tools, hooks, MCP servers or CLAUDE.md (`--safe-mode`), so it cannot read a file or run anything. Images you attach go with the message.
 - The chat is kept in `overseer.json` beside `state.json`, up to 60 messages. New chat starts a fresh conversation.
 - Claude Code keeps the instructions a conversation started with. When an upgrade changes the overseer's, the next question starts a fresh conversation and hands it the chat's last 20 messages, so you are never left on the old ones.
 - To change the model, edit `~/Library/Application Support/LordOfTheClaudes/overseer-settings.json`:
@@ -174,7 +175,7 @@ Any other flag asks, which rules out other methods, bodies, uploads, logins, coo
 
 ### Excluded directories
 
-A session working in an excluded directory is never auto-approved, never summarised by the observer, and left out of the overseer's briefing and `lotc digest`. The sidebar still shows it, by title only, with a lock. Add directories on the Auto-approve page; `~` works in the file. A session counts as inside when the directory it started in or the one it is in now is the excluded one or below it, through symlinks and in any case: `~/tax` holds `~/tax/2025` but not `~/taxes`.
+A session working in an excluded directory is never auto-approved, never summarised by the observer, and left out of the overseer's briefing and `lotc digest`, which only count them. Its folder never names a window that has other sessions in it. The sidebar still shows it, by title only, with a lock, and the overseer chat can take you there by its title without the overseer hearing of it. Add directories on the Auto-approve page; `~` works in the file. A session counts as inside when the directory it started in or the one it is in now is the excluded one or below it, through symlinks and in any case: `~/tax` holds `~/tax/2025` but not `~/taxes`.
 
 ### What it cannot do
 
@@ -269,7 +270,7 @@ Claude Code's session files are undocumented and can change in any release. Test
 - To try `lotc` beside an installed copy, run the build with `LOTC_SANDBOX=1 LOTC_SOCKET=<path>`. That turns off the hotkey and state.json, and keeps the overseer's files in a temporary folder. Set the same `LOTC_SOCKET` for `lotc`.
 - `.build/debug/LordOfTheClaudes --summarise <transcript.jsonl>` runs the summariser once on a transcript and prints what it wrote.
 - `LOTC_SANDBOX=1 .build/debug/LordOfTheClaudes --ask <briefing.txt> "<question>"` asks the overseer once against a briefing in a file, in the shape `lotc digest --all` prints, and shows what it proposes. Nothing is kept.
-- `LOTC_SANDBOX=1 LOTC_CLAUDE_TESTS=1 ./build.sh test --filter LiveOverseerTests` sends made-up images to the real `claude -p` and carries the conversation on. It uses a little of your plan.
+- `LOTC_SANDBOX=1 LOTC_CLAUDE_TESTS=1 ./build.sh test --filter LiveOverseerTests` sends made-up images to the real `claude -p` and carries the conversation on, then asks the overseer for "the email one" with two to choose from and for a session only a private one could be. It uses a little of your plan.
 
 ## Screenshots
 

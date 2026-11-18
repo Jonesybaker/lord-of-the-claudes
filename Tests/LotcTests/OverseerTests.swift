@@ -167,7 +167,7 @@ struct RoutingCardTests {
 }
 
 /// Plays back canned replies, as `claude -p` would stream them.
-private final class FakeRunner: OverseerRunning, @unchecked Sendable {
+final class FakeRunner: OverseerRunning, @unchecked Sendable {
     private let lock = NSLock()
     private var replies: [Result<String, OverseerFailure>]
     private(set) var requests: [OverseerRequest] = []
@@ -193,7 +193,7 @@ private final class FakeRunner: OverseerRunning, @unchecked Sendable {
 }
 
 @MainActor
-private final class FakeHost: OverseerHost {
+final class FakeHost: OverseerHost {
     var overseerPlaces = places
     private(set) var sent: [(text: String, sessionId: String, images: [AttachedImage])] = []
     private(set) var started: [(prompt: String, cwd: String, windowId: String?, images: [AttachedImage])] = []
@@ -476,13 +476,37 @@ struct GoToProposalTests {
             ```
             """)
         #expect(answer.text == "The diff is in its tab, so that is the place to look.")
-        #expect(answer.proposal == .goTo(target: ProposedTarget(group: "Shop", tab: 1, title: "Fix flaky checkout test")))
+        #expect(answer.proposal == .goTo(targets: [ProposedTarget(group: "Shop", tab: 1, title: "Fix flaky checkout test")]))
         #expect(!answer.unreadableProposal)
     }
 
     @Test func readsOtherSpellingsAndATargetsList() {
         let answer = OverseerAnswer.parse(#"Look there. {"action":"go_to","targets":[{"title":"Scout Rashford"}]}"#)
-        #expect(answer.proposal == .goTo(target: ProposedTarget(title: "Scout Rashford")))
+        #expect(answer.proposal == .goTo(targets: [ProposedTarget(title: "Scout Rashford")]))
+    }
+
+    @Test func twoTargetsAskWhichAndNeverGoToTheFirst() throws {
+        let answer = OverseerAnswer.parse(#"Either scout. {"action":"goto","targets":[{"title":"Scout Rashford"},{"title":"Scout Fernandes"}]}"#)
+        let card = RoutingCard.make(try #require(answer.proposal), places: places)
+        #expect(card.kind == .goTo([places[1], places[2]], missing: []))
+        #expect(card.asksWhich && !card.canSend)
+    }
+
+    @Test func aChoiceWithNoPromptIsWhereToGo() throws {
+        let answer = OverseerAnswer.parse("""
+            Which one?
+            ```lotc
+            {"action": "choose", "question": "Which scout?", "candidates": [{"group": "United", "tab": 2}, {"group": "United", "tab": 3}]}
+            ```
+            """)
+        #expect(answer.proposal == .choose(question: "Which scout?",
+                                           candidates: [ProposedTarget(group: "United", tab: 2), ProposedTarget(group: "United", tab: 3)],
+                                           prompt: nil))
+        let card = RoutingCard.make(try #require(answer.proposal), places: places)
+        #expect(card.kind == .goTo([places[1], places[2]], missing: []))
+        #expect(!card.hasPrompt)
+        let one = RoutingCard.make(.choose(question: nil, candidates: [ProposedTarget(title: "Plan the treble")], prompt: nil), places: places)
+        #expect(one.kind == .goTo([places[0]], missing: []) && one.canSend)
     }
 
     @Test(arguments: [
@@ -500,16 +524,16 @@ struct GoToProposalTests {
     }
 
     @Test func aGoToCardNamesOneSessionOrAsksWhich() {
-        let one = RoutingCard.make(.goTo(target: ProposedTarget(group: "Shop", tab: 1)), places: places)
+        let one = RoutingCard.make(.goTo(targets: [ProposedTarget(group: "Shop", tab: 1)]), places: places)
         #expect(one.kind == .goTo([places[3]], missing: []))
         #expect(one.canSend && one.isGoTo)
         #expect(one.headline == "Go to Shop, tab 1, Fix flaky checkout test")
 
-        let several = RoutingCard.make(.goTo(target: ProposedTarget(title: "Scout")), places: places)
+        let several = RoutingCard.make(.goTo(targets: [ProposedTarget(title: "Scout")]), places: places)
         #expect(several.kind == .goTo([places[1], places[2]], missing: []))
         #expect(!several.canSend)
 
-        let none = RoutingCard.make(.goTo(target: ProposedTarget(title: "Sign Bellingham")), places: places)
+        let none = RoutingCard.make(.goTo(targets: [ProposedTarget(title: "Sign Bellingham")]), places: places)
         #expect(none.kind == .goTo([], missing: ["\"Sign Bellingham\""]))
         #expect(!none.canSend)
         #expect(none.headline == "Could not find that session")
@@ -647,6 +671,32 @@ struct OverseerInstructionsTests {
     @Test func theFingerprintFollowsTheInstructions() {
         #expect(OverseerPrompt.fingerprint.count == 16)
         #expect(OverseerPrompt.system.contains(#""action": "goto""#))
+    }
+
+    @Test func aConversationUnderThe140InstructionsStartsAfresh() async {
+        let file = scratch()
+        defer { try? FileManager.default.removeItem(at: file) }
+        // What 1.4.0 recorded, before the overseer was told of private sessions and to choose when unsure.
+        let old = "565e96e7ce2b14b1"
+        #expect(OverseerPrompt.fingerprint != old)
+        OverseerConversation(sessionId: "session-140", messages: [OverseerMessage(role: .user, text: "who is waiting?"),
+                                                                  OverseerMessage(role: .overseer, text: "Nobody.")],
+                             instructions: old).save(to: file)
+        let runner = FakeRunner([.success("Still nobody.")])
+        let chat = OverseerChat(runner: runner, file: file, settingsFile: nil)
+        chat.draft = "and now?"
+        chat.submit(to: FakeHost())
+        await chat.settle()
+        #expect(!runner.requests[0].resume && runner.requests[0].sessionId != "session-140")
+        #expect(runner.requests[0].systemPrompt == OverseerPrompt.system)
+        #expect(runner.requests[0].message.contains("Developer: who is waiting?\nYou: Nobody."))
+        #expect(chat.conversation.instructions == OverseerPrompt.fingerprint)
+    }
+
+    @Test func promisesTheAppWillAskOnlyWithAChoice() {
+        #expect(!OverseerPrompt.system.contains("the app asks which"))
+        #expect(OverseerPrompt.system.contains("only when your reply ends with a choose block"))
+        #expect(OverseerPrompt.system.contains("private"))
     }
 
     @Test func anOlderFileStillLoads() throws {

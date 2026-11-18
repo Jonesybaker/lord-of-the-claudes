@@ -62,6 +62,8 @@ struct OverseerMessage: Codable, Identifiable, Equatable {
     var at = Date()
     /// Images the user sent with it. Nil in files from before images, and on every other message.
     var attachments: [AttachedImage]?
+    /// About a private session, answered by the app: shown here, never carried to the overseer. Nil on every other message.
+    var isPrivate: Bool?
 
     var images: [AttachedImage] { attachments ?? [] }
 }
@@ -108,11 +110,24 @@ enum OverseerPrompt {
         no tools and cannot read transcripts, files or the web. Answer from the briefing and this conversation \
         only, and say so when they do not tell you.
 
+        Some sessions are private. The briefing says how many are open and nothing else about them: not their \
+        titles, directories or tabs. When the developer asks for a session the briefing does not show, say it may \
+        be one of the private ones and that they can pick it in the sidebar, and propose nothing. Never guess \
+        which session a private one is.
+
         How to answer:
         - Briefly: a sentence or two, or a short list. Plain text, UK English.
         - Name a session as a link: its title, then its group and tab number, like \
         [Fix flaky checkout test](session:Shop/2). A session with no tab number: [Its title](session:Other).
         - "What needs me" means the sessions waiting for the developer: say what each is waiting for, longest wait first.
+
+        Which session is meant:
+        - A send or goto block names one session only when the briefing clearly identifies it: its title, \
+        topic, goal or state plainly fits what the developer said, and no other session does.
+        - When it is a guess between two or more sessions, end with a choose block listing them, never a send \
+        or goto for one of them.
+        - When no session fits, say so and propose nothing, unless the work needs a new session.
+        - Say that the app will ask which session only when your reply ends with a choose block.
 
         Proposing a prompt for a session:
         When the developer wants something said to a session, or writes what is plainly a prompt for one \
@@ -133,12 +148,6 @@ enum OverseerPrompt {
         ```lotc
         {"action": "new", "group": "Shop", "cwd": "~/Projects/shop-api", "prompt": "..."}
         ```
-        - When two or more sessions could be meant, ask which:
-        ```lotc
-        {"action": "choose", "question": "Which checkout session?", "candidates": [{"group": "Shop", "tab": 2, "title": "..."}, {"group": "Shop", "tab": 4, "title": "..."}], "prompt": "..."}
-        ```
-        - At most one block per reply, and only when proposing. Nothing is sent until the developer confirms \
-        it in the window, so never say that you have sent anything.
 
         Taking the developer to a session:
         Most questions are answered from the briefing; answer those and propose nothing. Only when the answer \
@@ -148,8 +157,18 @@ enum OverseerPrompt {
         ```lotc
         {"action": "goto", "target": {"group": "Shop", "tab": 2, "title": "Fix flaky checkout test"}}
         ```
-        - One session. When two could be meant, put both in "targets" instead of "target" and the app asks which.
         - The app shows a Go button and moves nothing until the developer presses it, so never say you have taken them there.
+
+        Asking which session:
+        When two or more sessions could be meant, by a prompt or by a request to go somewhere, end with:
+        ```lotc
+        {"action": "choose", "question": "Which checkout session?", "candidates": [{"group": "Shop", "tab": 2, "title": "..."}, {"group": "Shop", "tab": 4, "title": "..."}], "prompt": "..."}
+        ```
+        - "prompt" is what to send once the developer picks. Leave it out when they want to be taken there.
+        - The app shows the candidates as buttons for the developer to pick from.
+
+        At most one block per reply, and only when proposing. Nothing is sent until the developer confirms it in \
+        the window, so never say that you have sent anything.
         """
 
     /// Changes whenever `system` does. A saved conversation whose instructions differ starts afresh, as
@@ -161,11 +180,12 @@ enum OverseerPrompt {
     static let carriedCharacters = 600
 
     /// The developer's words, after the briefing and anything done since the last answer. A fresh Claude Code
-    /// conversation that follows an earlier one is given the end of it first, so the chat carries on. Images go
-    /// beside this text, not in it.
+    /// conversation that follows an earlier one is given the end of it first, so the chat carries on, less any
+    /// exchange about a private session. Images go beside this text, not in it.
     static func message(_ text: String, briefing: String, since notes: [String], earlier: [OverseerMessage] = [],
                         images: Int = 0, at date: Date = Date()) -> String {
         var parts: [String] = []
+        let earlier = earlier.filter { $0.isPrivate != true }
         if !earlier.isEmpty { parts.append(carried(earlier)) }
         parts.append("<briefing at=\"\(date.formatted(date: .omitted, time: .shortened))\">\n\(briefing)\n</briefing>")
         if !notes.isEmpty {
@@ -210,14 +230,17 @@ protocol OverseerHost: AnyObject {
 }
 
 extension Store: OverseerHost {
-    /// Every running session, in window and tab order, then those under "Other".
+    /// Every running session, in window and tab order, then those under "Other". Private ones included, marked.
     var overseerPlaces: [SessionPlace] {
         var places = groups.flatMap { group in
-            group.rows.map { SessionPlace(rowId: $0.id, group: group.name, windowId: group.id, tab: $0.tab, title: $0.title, cwd: $0.cwd) }
+            group.rows.map {
+                SessionPlace(rowId: $0.id, group: group.name, windowId: group.id, tab: $0.tab, title: $0.title, cwd: $0.cwd,
+                             isPrivate: $0.isPrivate)
+            }
         }
         let placed = Set(places.map(\.rowId))
         places += rows.filter { $0.isLive && !placed.contains($0.id) }.map {
-            SessionPlace(rowId: $0.id, group: "Other", windowId: nil, tab: nil, title: $0.title, cwd: $0.cwd)
+            SessionPlace(rowId: $0.id, group: "Other", windowId: nil, tab: nil, title: $0.title, cwd: $0.cwd, isPrivate: $0.isPrivate)
         }
         return places
     }
@@ -289,6 +312,10 @@ final class OverseerChat: ObservableObject {
         draftImages = []
         showingNeeds = false
         if card != nil { cancelCard() }
+        if let route = PrivateRoute.find(text, in: host.overseerPlaces) {
+            answerHere(route, text: text, images: images)
+            return
+        }
         let earlier = conversation.messages
         // Claude Code would keep the old instructions on resume, so changed ones need a fresh conversation.
         let outdated = conversation.sessionId != nil && conversation.instructions != OverseerPrompt.fingerprint
@@ -316,6 +343,16 @@ final class OverseerChat: ObservableObject {
         func message(fresh: Bool) -> String {
             OverseerPrompt.message(text, briefing: briefing, since: since, earlier: fresh ? earlier : [], images: images.count)
         }
+    }
+
+    /// A message naming a private session, answered without the overseer: the words stay on screen and out of
+    /// everything it is told.
+    private func answerHere(_ route: PrivateRoute, text: String, images: [AttachedImage]) {
+        append(.user, text, images: images, isPrivate: true)
+        append(.note, route.answer, isPrivate: true)
+        var card = route.card
+        if card.hasPrompt { card.images = images }
+        offer(card)
     }
 
     /// Waits for the answer to the question in flight. For tests.
@@ -347,10 +384,13 @@ final class OverseerChat: ObservableObject {
                 reply = try await turn(question.message(fresh: true), images: question.images, settings: settings, sessionId: nil)
             }
             let answer = OverseerAnswer.parse(reply)
-            append(.overseer, answer.text.isEmpty && answer.proposal != nil ? "Here is what I would send." : answer.text)
+            // It is never told of private sessions, so nothing it proposes may land on one.
+            let shared = host.overseerPlaces.filter { !$0.isPrivate }
+            let card = answer.proposal.map { RoutingCard.make($0.checked(against: answer.text, places: shared), places: shared) }
+            let text = card?.asksWhich == true ? answer.text : AnswerText.withoutPromisedChoice(answer.text)
+            append(.overseer, text.isEmpty && card != nil ? "Here is what I would send." : text)
             if answer.unreadableProposal { append(.note, "It proposed something the app could not read, so nothing is offered to send.") }
-            if let proposal = answer.proposal {
-                var card = RoutingCard.make(proposal, places: host.overseerPlaces)
+            if var card {
                 // The images asked about go with the prompt, listed on the card before anything is sent.
                 if card.hasPrompt { card.images = question.images }
                 offer(card)
@@ -406,6 +446,9 @@ final class OverseerChat: ObservableObject {
         let prompt = card.prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         let images = card.images
         let withImages = images.isEmpty ? "" : ", with \(OverseerPrompt.imageCount(images.count).lowercased())"
+        // A private session's card was the app's: its outcome shows here and is never told to the overseer.
+        let note = { (text: String) in self.append(.note, text, isPrivate: card.isPrivate) }
+        let tell = { (text: String) in if !card.isPrivate { self.unsaid.append(text) } }
         self.card?.sending = true
         switch card.kind {
         case .send(let places, _):
@@ -415,27 +458,27 @@ final class OverseerChat: ObservableObject {
                 if await host.send(prompt, images: images, toSession: place.rowId) { reached.append(place) } else { missed.append(place) }
             }
             if !reached.isEmpty {
-                append(.note, "Sent to \(Self.list(reached))\(withImages).")
-                unsaid.append("The developer sent this to \(Self.list(reached))\(withImages): \(prompt)")
+                note("Sent to \(Self.list(reached))\(withImages).")
+                tell("The developer sent this to \(Self.list(reached))\(withImages): \(prompt)")
             }
             if !missed.isEmpty {
-                append(.note, "Could not type into \(Self.list(missed)): its tab has gone or been renamed. Nothing was sent there.")
+                note("Could not type into \(Self.list(missed)): its tab has gone or been renamed. Nothing was sent there.")
             }
         case .newSession(let cwd, let group, let windowId):
             switch await host.startSession(prompt: prompt, images: images, cwd: cwd, windowId: windowId) {
-            case .inItsWindow?: append(.note, "Started a new session in \(group ?? "its window")\(withImages).")
-            case .inFrontWindow?: append(.note, "Started a new session in the front window\(withImages): \(group.map { "the \($0) window" } ?? "its window") has gone.")
-            case .inNewWindow?: append(.note, "Started a new session in a new window\(withImages).")
-            case nil: append(.note, "Could not open a tab in Ghostty. Nothing was started.")
+            case .inItsWindow?: note("Started a new session in \(group ?? "its window")\(withImages).")
+            case .inFrontWindow?: note("Started a new session in the front window\(withImages): \(group.map { "the \($0) window" } ?? "its window") has gone.")
+            case .inNewWindow?: note("Started a new session in a new window\(withImages).")
+            case nil: note("Could not open a tab in Ghostty. Nothing was started.")
             }
-            unsaid.append("The developer started a new session in \(cwd)\(withImages) with: \(prompt)")
+            tell("The developer started a new session in \(cwd)\(withImages) with: \(prompt)")
         case .goTo(let places, _):
             guard let place = places.first else { break }
             if host.goTo(session: place.rowId) {
-                append(.note, "Went to \(Self.list([place])).")
-                unsaid.append("The developer went to \(Self.list([place])) to look for themselves.")
+                note("Went to \(Self.list([place])).")
+                tell("The developer went to \(Self.list([place])) to look for themselves.")
             } else {
-                append(.note, "Could not find the tab of \(Self.list([place])). It may have closed.")
+                note("Could not find the tab of \(Self.list([place])). It may have closed.")
             }
         case .choose:
             break
@@ -446,25 +489,29 @@ final class OverseerChat: ObservableObject {
     func cancelCard() {
         guard let card else { return }
         self.card = nil
-        append(.note, card.isGoTo ? "Stayed here." : "Not sent.")
-        unsaid.append("The developer cancelled your last proposal.")
+        append(.note, card.isGoTo ? "Stayed here." : "Not sent.", isPrivate: card.isPrivate)
+        if !card.isPrivate { unsaid.append("The developer cancelled your last proposal.") }
     }
 
     /// Narrows a "which one?" card to the session picked, still waiting for Send or Go.
     func choose(_ place: SessionPlace) {
         guard let card else { return }
+        var picked: RoutingCard
         switch card.kind {
-        case .choose: self.card = RoutingCard(kind: .send([place], missing: []), prompt: card.prompt, images: card.images)
-        case .goTo(let places, _) where places.count > 1: self.card = RoutingCard(kind: .goTo([place], missing: []), prompt: "")
-        default: break
+        case .choose: picked = RoutingCard(kind: .send([place], missing: []), prompt: card.prompt, images: card.images)
+        case .goTo(let places, _) where places.count > 1: picked = RoutingCard(kind: .goTo([place], missing: []), prompt: "")
+        default: return
         }
+        picked.isPrivate = card.isPrivate
+        self.card = picked
     }
 
     /// A proposal waiting when the window shows again must be read again before Return acts on it.
     func windowShown() { card?.shownAt = Date() }
 
-    private func append(_ role: OverseerMessage.Role, _ text: String, images: [AttachedImage] = []) {
-        conversation.append(OverseerMessage(role: role, text: text, attachments: images.isEmpty ? nil : images))
+    private func append(_ role: OverseerMessage.Role, _ text: String, images: [AttachedImage] = [], isPrivate: Bool = false) {
+        conversation.append(OverseerMessage(role: role, text: text, attachments: images.isEmpty ? nil : images,
+                                            isPrivate: isPrivate ? true : nil))
         if role != .user { AccessibilityNotification.Announcement(text).post() }
         save()
     }
