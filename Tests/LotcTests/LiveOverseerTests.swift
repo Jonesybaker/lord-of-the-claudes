@@ -2,8 +2,9 @@ import AppKit
 import Foundation
 import Testing
 @testable import LordOfTheClaudes
+@testable import LotcKit
 
-/// Asks the real `claude -p` about made-up pictures, then carries on the conversation. It spends a little of your
+/// Asks the real `claude -p` about made-up pictures and made-up sessions, then carries on the conversation. It spends a little of your
 /// plan, so it only runs when asked, sandboxed so nothing lands in the overseer's own folder:
 /// LOTC_SANDBOX=1 LOTC_CLAUDE_TESTS=1 ./build.sh test --filter LiveOverseerTests
 @Suite(.enabled(if: ProcessInfo.processInfo.environment["LOTC_CLAUDE_TESTS"] == "1" && Sandbox.isOn), .serialized)
@@ -61,6 +62,68 @@ struct LiveOverseerTests {
         let remembered = try await answer(second).lowercased()
         print("Second answer: \(remembered)")
         #expect(remembered.contains("7") || remembered.contains("seven"))
+    }
+
+    /// Made-up sessions: two that could be "the email one", and a private one the overseer only hears counted.
+    @MainActor
+    private final class BriefedHost: OverseerHost {
+        let rows: [Row] = {
+            let now = Date()
+            func row(_ id: String, _ title: String, window: String, tab: Int?, goal: String, isPrivate: Bool = false) -> Row {
+                var row = Row(id: id, title: title, cwd: "/Users/fan/Projects/shop", status: "idle", statusSince: nil, lastInteraction: now,
+                              needsYou: false, prompts: [], ticket: nil, windowId: window, tab: tab,
+                              digest: isPrivate ? nil : Digest(goal: goal, state: "Under way", at: now))
+                row.isPrivate = isPrivate
+                return row
+            }
+            return [row("renewal", "Draft the season ticket renewal email", window: "shop", tab: 1, goal: "Write the renewal email to season ticket holders"),
+                    row("confirmation", "Fix the order confirmation email", window: "shop", tab: 2, goal: "Stop order confirmations going out twice"),
+                    row("checkout", "Fix flaky checkout test", window: "shop", tab: 3, goal: "Stop the checkout test failing"),
+                    row("scout", "Scout Rashford", window: "united", tab: 1, goal: "Write up the scouting report"),
+                    row("payroll", "Payroll export", window: "other", tab: nil, goal: "", isPrivate: true)]
+        }()
+
+        func digestBriefing() -> String {
+            DigestBriefing.text([.init(name: "Shop", rows: Array(rows[0...2])), .init(name: "United", rows: [rows[3]]),
+                                 .init(name: "Other", rows: [rows[4]])])
+        }
+
+        var overseerPlaces: [SessionPlace] {
+            rows.map { row in
+                SessionPlace(rowId: row.id, group: row.tab == nil ? "Other" : (row.windowId == "shop" ? "Shop" : "United"),
+                             windowId: row.windowId, tab: row.tab, title: row.title, cwd: row.cwd, isPrivate: row.isPrivate)
+            }
+        }
+
+        func send(_ text: String, images: [AttachedImage], toSession sessionId: String) async -> Bool { false }
+        func startSession(prompt: String, images: [AttachedImage], cwd: String, windowId: String?) async -> Ghostty.NewTab? { nil }
+        func goTo(session sessionId: String) -> Bool { false }
+    }
+
+    @MainActor private func ask(_ text: String) async -> OverseerChat {
+        let chat = OverseerChat(runner: ClaudeCLI(), file: nil, settingsFile: nil)
+        chat.draft = text
+        chat.submit(to: BriefedHost())
+        await chat.settle()
+        print("Asked: \(text)\nAnswer: \(chat.conversation.messages.last?.text ?? "")\nCard: \(String(describing: chat.card?.kind))")
+        return chat
+    }
+
+    @MainActor @Test func twoSessionsThatFitAreAChoice() async throws {
+        let chat = await ask("take me to the email one")
+        let card = try #require(chat.card)
+        #expect(card.asksWhich)
+        let offered: [String] = switch card.kind {
+        case .choose(_, let places), .goTo(let places, _): places.map(\.rowId)
+        default: []
+        }
+        #expect(Set(offered).isSuperset(of: ["renewal", "confirmation"]))
+    }
+
+    @MainActor @Test func aSessionNotInTheBriefingMayBePrivate() async {
+        let chat = await ask("take me to the VAT return one")
+        #expect(chat.card.map { !$0.canSend } ?? true)
+        #expect(chat.conversation.messages.last?.text.lowercased().contains("private") == true)
     }
 
     @Test func fiveImagesAtTheirLargestFitOnStdin() async throws {
