@@ -80,7 +80,7 @@ struct WebSearchRuleTests {
         (Fixture.search("api_key: abc123 not working"), "password=value"),
         (Fixture.search("commit 9fceb02d0ae598e95dc970b74767f19372d61af8 broke it"), "hex"),
         (Fixture.search("token Zx8Kp2Qw9LmN4vB7cT1yR6sD3fG5hJ0aE"), "random-looking"),
-        (Fixture.search("AIzaSyA1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q"), "Google API key"),
+        (Fixture.search("AIza" + "SyA1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q"), "Google API key"),
         (Fixture.search("sk_live_abcdefghijklmnop1234"), "Stripe"),
         (Fixture.search("npm_abcdefghijklmnopqrstuvwxyz0123456789"), "npm token"),
         (Fixture.search("swift", [("allowed_domains", .array([.string("AKIAIOSFODNN7EXAMPLE.example.com")]))]), "AWS"),
@@ -745,7 +745,8 @@ struct ExcludedDirectoriesTests {
 struct SecretDetectorTests {
     @Test(arguments: [
         ("AKIAIOSFODNN7EXAMPLE", "AWS"),
-        ("ASIAY34FZKBOKMUTVV7A", "AWS"),
+        // Made up, and split so secret scanners do not take the fixture for a live key.
+        ("ASIA" + "Y34FZKBOKMUTVV7A", "AWS"),
         ("sk-ant-api03-abcdefghijklmnopqrstuvwxyz", "sk-"),
         ("sk-proj-abcdefghijklmnop1234", "sk-"),
         ("ghp_abcdefghijklmnopqrstuvwxyz0123456789", "GitHub"),
